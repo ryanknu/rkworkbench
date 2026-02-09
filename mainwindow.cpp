@@ -67,31 +67,42 @@ void MainWindow::_reflowTrees()
     // Populate disk listing
     std::unordered_map<std::string, QStandardItem*> disks;
     for (auto& title : *appModel->titles()) {
+        auto titleItem = new QStandardItem(q(title.friendlyTitle()));
+        titleItem->setData(q(std::format("{}", title.id)), Qt::UserRole);
+        if (appModel->isIdentified(std::format("{}", title.id))) {
+            titleItem->setForeground(QBrush(QColor("orange")));
+        }
+
         if (!disks.contains(title.diskName())) {
             auto diskItem = new QStandardItem(q(title.diskName()));
             diskItem->setSelectable(false);
             disksModel->invisibleRootItem()
                 ->appendRow(diskItem);
 
-            if (appModel->isIdentified(std::format("{}", title.id))) {
-                diskItem->setForeground(QBrush(QColor("orange")));
-            }
-            diskItem->setData(q(std::format("{}", title.id)), Qt::UserRole);
-
-            diskItem->appendRow(new QStandardItem(q(title.friendlyTitle())));
+            diskItem->appendRow(titleItem);
             disks[title.diskName()] = diskItem;
         } else {
             auto diskItem = disks[title.diskName()];
-            if (appModel->isIdentified(std::format("{}", title.id))) {
-                diskItem->setForeground(QBrush(QColor("orange")));
-            }
-            diskItem->setData(q(std::format("{}", title.id)), Qt::UserRole);
-            diskItem->appendRow(new QStandardItem(q(title.friendlyTitle())));
+            diskItem->appendRow(titleItem);
         }
     }
 
     ui->showsTree->expandAll();
     ui->disksTree->expandAll();
+}
+
+/**
+ * Retrieves the ID of the selected item in the tree.
+ * Assumes the ID is set as the UserRole data on item in the data model.
+ */
+std::string MainWindow::_getIdForSelectedItemInTree(QTreeView *&tree)
+{
+    QModelIndex index = tree->currentIndex();
+    if (!index.isValid()) {
+        return "";
+    }
+    QVariant data = index.model()->data(index, Qt::UserRole);
+    return data.toString().toStdString();
 }
 
 void MainWindow::setAppModel(AppModel *theModel) {
@@ -189,21 +200,10 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     QObject::connect(ui->identifyBtn, &QPushButton::clicked, [&]() {
-        QModelIndex index = ui->showsTree->currentIndex();
-        if (!index.isValid()) {
-            return;
-        }
-        QVariant data = index.model()->data(index, Qt::UserRole);
-        QString text = data.toString();
+        auto showId = _getIdForSelectedItemInTree(ui->showsTree);
+        auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
 
-        QModelIndex index2 = ui->disksTree->currentIndex();
-        if (!index2.isValid()) {
-            return;
-        }
-        QVariant data2 = index2.model()->data(index2, Qt::UserRole);
-        QString text2 = data2.toString();
-
-        appModel->identifyEpisode(text2.toStdString(), text.toStdString());
+        appModel->identifyEpisode(showId, titleId);
 
         _reflowTrees();
     });

@@ -30,7 +30,7 @@ class AppModel {
         std::vector<Episode> *episodes();
         std::vector<RippedTitle> *titles();
         void setPreprocessorCommand(std::string cmd);
-        void identifyEpisode(std::string diskItem, std::string tmdbItem);
+        void identifyEpisode(std::string titleId, std::string showId);
         bool isIdentified(std::string item);
 
     private:

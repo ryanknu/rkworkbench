@@ -276,13 +276,15 @@ void AppModel::setPreprocessorCommand(std::string cmd)
     _mPreprocessorCommand = cmd;
 }
 
-void AppModel::identifyEpisode(std::string diskItem, std::string tmdbItem)
+void AppModel::identifyEpisode(std::string titleId, std::string showId)
 {
-    _mIdentifiedEpisodes[diskItem] = tmdbItem;
+    qDebug() << "Identifying: " << titleId << " " << showId;
+    _mIdentifiedEpisodes[titleId] = showId;
 }
 
 bool AppModel::isIdentified(std::string item)
 {
+    qDebug() << "isIdentified(" << item << ")";
     // either a key or a value in _mIdentifiedEpisodes
     for (const auto& pair : _mIdentifiedEpisodes) {
         if (pair.first == item || pair.second == item) {
@@ -317,5 +319,5 @@ std::string RippedTitle::friendlyTitle()
     std::stringstream ss;
     ss << std::fixed << std::setprecision(1) << gb << "G";
 
-    return format("{} {}", ss.str(), _mTitleName);
+    return std::format("{} {} {}", id, ss.str(), _mTitleName);
 }
