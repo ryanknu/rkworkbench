@@ -23,7 +23,7 @@ class AppModel {
         std::string tmdbApiKey();
         void setTmdbApiKey(std::string apiKey);
         void toggleTmdbMode();
-        std::vector<std::string> tasks();
+        std::vector<std::string> *tasks();
         void pushTask(std::string task);
         std::string popTask();
         std::vector<Show> *shows();
@@ -32,6 +32,7 @@ class AppModel {
         void setPreprocessorCommand(std::string cmd);
         void identifyEpisode(std::string titleId, std::string showId);
         bool isIdentified(std::string item);
+        void enqueueAllJobs();
 
     private:
         TmdbMode _mTmdbMode;
@@ -65,6 +66,7 @@ class RippedTitle
         std::uint64_t id;
         std::string diskName();
         std::string friendlyTitle();
+        std::filesystem::path path();
 
     private:
         std::filesystem::path _mPath;
@@ -93,6 +95,7 @@ class Episode
         int showId;
 
         std::string title;
+        std::string seasonKey();
         std::string friendlyTitle();
         // int duration
 };

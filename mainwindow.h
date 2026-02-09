@@ -1,6 +1,7 @@
 #include <filesystem>
 #include <QMainWindow>
 #include <QStandardItemModel>
+#include <QStringListModel>
 #include <QPushButton>
 #include <QTreeView>
 #include "phonon/mediasource.h"
@@ -28,5 +29,6 @@ private:
 	AppModel *appModel;
 
 	void _reflowTrees();
+	void _reflowTaskList();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 };

@@ -14,133 +14,144 @@
    <string>RK's Ingest Workbench</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <layout class="QHBoxLayout" name="centralHLayout">
+   <layout class="QVBoxLayout" name="centralVLayout">
     <item>
-     <widget class="QTreeView" name="disksTree">
-      <property name="minimumSize">
-       <size>
-        <width>0</width>
-        <height>0</height>
-       </size>
-      </property>
-      <property name="maximumSize">
-       <size>
-        <width>280</width>
-        <height>16777215</height>
-       </size>
-      </property>
-     </widget>
-    </item>
-    <item>
-     <widget class="QTreeView" name="showsTree">
-      <property name="minimumSize">
-       <size>
-        <width>200</width>
-        <height>0</height>
-       </size>
-      </property>
-      <property name="maximumSize">
-       <size>
-        <width>280</width>
-        <height>16777215</height>
-       </size>
-      </property>
-     </widget>
-    </item>
-    <item>
-     <layout class="QVBoxLayout" name="verticalLayout">
-      <property name="spacing">
-       <number>0</number>
-      </property>
-      <property name="rightMargin">
-       <number>0</number>
-      </property>
+     <layout class="QHBoxLayout" name="centralHLayout">
       <item>
-       <widget class="Phonon::VideoPlayer" name="videoPlayer"/>
-      </item>
-      <item>
-       <widget class="QPushButton" name="playBtn">
-        <property name="text">
-         <string>Play Selected</string>
+       <widget class="QTreeView" name="disksTree">
+        <property name="minimumSize">
+         <size>
+          <width>0</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>280</width>
+          <height>16777215</height>
+         </size>
         </property>
        </widget>
       </item>
       <item>
-       <widget class="QPushButton" name="identifyBtn">
-        <property name="text">
-         <string>Identify Selected</string>
+       <widget class="QTreeView" name="showsTree">
+        <property name="minimumSize">
+         <size>
+          <width>200</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>280</width>
+          <height>16777215</height>
+         </size>
         </property>
        </widget>
       </item>
       <item>
-       <widget class="QPushButton" name="pushButton_3">
-        <property name="text">
-         <string>Rename Identified</string>
+       <layout class="QVBoxLayout" name="verticalLayout">
+        <property name="spacing">
+         <number>0</number>
         </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLineEdit" name="preprocessorCommand">
-        <property name="placeholderText">
-         <string>Preprocessor Command</string>
+        <property name="rightMargin">
+         <number>0</number>
         </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLineEdit" name="tmdbApiKey">
-        <property name="inputMask">
-         <string/>
-        </property>
-        <property name="text">
-         <string/>
-        </property>
-        <property name="echoMode">
-         <enum>QLineEdit::EchoMode::Password</enum>
-        </property>
-        <property name="placeholderText">
-         <string>TMDB API Key</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <layout class="QHBoxLayout" name="horizontalLayout">
         <item>
-         <widget class="QLineEdit" name="tmdbId">
+         <widget class="Phonon::VideoPlayer" name="videoPlayer"/>
+        </item>
+        <item>
+         <widget class="QPushButton" name="playBtn">
+          <property name="text">
+           <string>Play Selected</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="identifyBtn">
+          <property name="text">
+           <string>Identify Selected</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="execBtn">
+          <property name="text">
+           <string>Rename Identified</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="preprocessorCommand">
           <property name="placeholderText">
-           <string>TMDB ID</string>
+           <string>Preprocessor Command</string>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QPushButton" name="tmdbModeBtn">
+         <widget class="QLineEdit" name="tmdbApiKey">
+          <property name="inputMask">
+           <string/>
+          </property>
           <property name="text">
-           <string>TV</string>
+           <string/>
+          </property>
+          <property name="echoMode">
+           <enum>QLineEdit::EchoMode::Password</enum>
+          </property>
+          <property name="placeholderText">
+           <string>TMDB API Key</string>
           </property>
          </widget>
         </item>
         <item>
-         <widget class="QPushButton" name="tmdbFetchBtn">
-          <property name="text">
-           <string>Lookup</string>
+         <layout class="QHBoxLayout" name="horizontalLayout">
+          <item>
+           <widget class="QLineEdit" name="tmdbId">
+            <property name="placeholderText">
+             <string>TMDB ID</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="tmdbModeBtn">
+            <property name="text">
+             <string>TV</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="tmdbFetchBtn">
+            <property name="text">
+             <string>Lookup</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <spacer name="verticalSpacer">
+          <property name="orientation">
+           <enum>Qt::Orientation::Vertical</enum>
           </property>
-         </widget>
+          <property name="sizeHint" stdset="0">
+           <size>
+            <width>20</width>
+            <height>40</height>
+           </size>
+          </property>
+         </spacer>
         </item>
        </layout>
       </item>
-      <item>
-       <spacer name="verticalSpacer">
-        <property name="orientation">
-         <enum>Qt::Orientation::Vertical</enum>
-        </property>
-        <property name="sizeHint" stdset="0">
-         <size>
-          <width>20</width>
-          <height>40</height>
-         </size>
-        </property>
-       </spacer>
-      </item>
      </layout>
+    </item>
+    <item>
+     <widget class="QListView" name="tasksList">
+      <property name="text" stdset="0">
+       <string>Test</string>
+      </property>
+     </widget>
     </item>
    </layout>
   </widget>

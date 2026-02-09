@@ -251,6 +251,11 @@ Episode::Episode(int _id, int _season, int _number, int _showId, std::string _ti
     title = _title;
 }
 
+std::vector<std::string> *AppModel::tasks()
+{
+    return &_mTasks;
+}
+
 std::vector<Show> *AppModel::shows()
 {
     return &_mShows;
@@ -266,9 +271,14 @@ std::vector<RippedTitle> *AppModel::titles()
     return &_mTitles;
 }
 
+std::string Episode::seasonKey()
+{
+    return std::format("S{:02}E{:02}", season, number);
+}
+
 std::string Episode::friendlyTitle()
 {
-    return std::format("S{:02}E{:02} - {}", season, number, title);
+    return std::format("{} - {}", seasonKey(), title);
 }
 
 void AppModel::setPreprocessorCommand(std::string cmd)
@@ -278,13 +288,11 @@ void AppModel::setPreprocessorCommand(std::string cmd)
 
 void AppModel::identifyEpisode(std::string titleId, std::string showId)
 {
-    qDebug() << "Identifying: " << titleId << " " << showId;
     _mIdentifiedEpisodes[titleId] = showId;
 }
 
 bool AppModel::isIdentified(std::string item)
 {
-    qDebug() << "isIdentified(" << item << ")";
     // either a key or a value in _mIdentifiedEpisodes
     for (const auto& pair : _mIdentifiedEpisodes) {
         if (pair.first == item || pair.second == item) {
@@ -319,5 +327,64 @@ std::string RippedTitle::friendlyTitle()
     std::stringstream ss;
     ss << std::fixed << std::setprecision(1) << gb << "G";
 
-    return std::format("{} {} {}", id, ss.str(), _mTitleName);
+    return std::format("{} {}", ss.str(), _mTitleName);
+}
+
+void AppModel::pushTask(std::string task)
+{
+    _mTasks.push_back(task);
+}
+
+std::string AppModel::popTask()
+{
+    if (_mTasks.empty()) {
+        return "";
+    }
+    auto ret = _mTasks.front();
+    _mTasks.erase(_mTasks.begin());
+    return ret;
+}
+
+/**
+ * Creates all jobs from the current UI state.
+ */
+void AppModel::enqueueAllJobs()
+{
+    auto countTasks = _mTasks.size();
+    for (const auto& pair : _mIdentifiedEpisodes) {
+        auto diskId = pair.first;
+        auto episodeId = pair.second;
+        for (auto& title : _mTitles) {
+            if (std::format("{}", title.id) == diskId) {
+                for (auto& episode : _mEpisodes) {
+                    if (std::format("{}", episode.id) == episodeId) {
+                        auto showId = episode.showId;
+                        for (auto& show : _mShows) {
+                            if (show.id == showId) {
+                                auto outDir = std::format("output/{}", show.title);
+
+                                // TODO: If outdir exists, don't mkdir it
+                                auto cmd = std::format("mkdir -p \"{}\"", outDir);
+                                _mTasks.push_back(cmd);
+
+                                auto cmd2 = std::format("mv \"{}\" \"{}/{}.mkv\"", title.path().string(), outDir, episode.seasonKey());
+                                _mTasks.push_back(cmd2);
+                                goto broke;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        broke:
+        qDebug() << "test";
+    }
+    if (_mTasks.size() > countTasks) {
+        _mTasks.push_back("_reflowAll");
+    }
+}
+
+fs::path RippedTitle::path()
+{
+    return _mPath;
 }

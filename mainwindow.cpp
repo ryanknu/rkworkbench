@@ -91,6 +91,26 @@ void MainWindow::_reflowTrees()
     ui->disksTree->expandAll();
 }
 
+void MainWindow::_reflowTaskList()
+{
+    // Get the model
+    auto* model = dynamic_cast<QStringListModel *>(ui->tasksList->model());
+
+    auto stringList = new QStringList();
+
+    for (auto& task : *appModel->tasks()) {
+        stringList->append(q(task));
+    }
+
+    model->setStringList(*stringList);
+
+    if (appModel->tasks()->empty()) {
+        ui->tasksList->setMaximumHeight(0);
+    } else {
+        ui->tasksList->setMaximumHeight(200);
+    }
+}
+
 /**
  * Retrieves the ID of the selected item in the tree.
  * Assumes the ID is set as the UserRole data on item in the data model.
@@ -112,6 +132,9 @@ void MainWindow::setAppModel(AppModel *theModel) {
     ui->tmdbApiKey->setText(q(appModel->tmdbApiKey()));
     ui->tmdbModeBtn->setText(q(appModel->tmdbMode()));
 
+    // Initialize task list model
+    ui->tasksList->setModel(new QStringListModel());
+
     // Initialize tree models
     auto* disksModel = new QStandardItemModel(this);
     auto* showsModel = new QStandardItemModel(this);
@@ -121,6 +144,7 @@ void MainWindow::setAppModel(AppModel *theModel) {
     ui->showsTree->setModel(showsModel);
 
     _reflowTrees();
+    _reflowTaskList();
 
     ui->disksTree->setRootIsDecorated(false);
     ui->disksTree->setItemsExpandable(false);
@@ -203,9 +227,14 @@ MainWindow::MainWindow(QWidget *parent)
         auto showId = _getIdForSelectedItemInTree(ui->showsTree);
         auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
 
-        appModel->identifyEpisode(showId, titleId);
+        appModel->identifyEpisode(titleId, showId);
 
         _reflowTrees();
+    });
+
+    QObject::connect(ui->execBtn, &QPushButton::clicked, [&]() {
+        appModel->enqueueAllJobs();
+        _reflowTaskList();
     });
 }
 

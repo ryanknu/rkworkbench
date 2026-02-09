@@ -1,4 +1,4 @@
-OPTIONS := "-fPIC -std=c++20"
+OPTIONS := "-fPIC -std=c++20 -fuse-ld=mold"
 DEPS := "Qt6Core Qt6Widgets phonon4qt6 nlohmann_json"
 CFLAGS := shell(f'pkg-config --cflags {{DEPS}}')
 LIBS := shell(f'pkg-config --libs {{DEPS}}')
