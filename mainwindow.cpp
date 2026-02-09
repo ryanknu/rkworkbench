@@ -1,0 +1,215 @@
+#include "mainwindow.h"
+#include "./ui_mainwindow.h"
+#include <QDebug>
+#include <fstream>
+#include <string>
+#include <format>
+#include <unordered_map>
+
+namespace fs = std::filesystem;
+
+std::string exec(const char* cmd) {
+    char buffer[128];
+    std::string result = "";
+    FILE* pipe = popen(cmd, "r");
+    if (!pipe) throw std::runtime_error("popen() failed!");
+    try {
+        while (fgets(buffer, sizeof buffer, pipe) != NULL) {
+            result += buffer;
+        }
+    } catch (...) {
+        pclose(pipe);
+        throw;
+    }
+    pclose(pipe);
+    return result;
+}
+
+QString q(std::string str)
+{
+    return QString::fromStdString(str);
+}
+
+/**
+ * Redraws the UI for the two trees from data in appModel
+ * I'm aware this pattern has flaws.
+ */
+void MainWindow::_reflowTrees()
+{
+    // Get the tree models
+    auto* showsModel = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
+    auto* disksModel = dynamic_cast<QStandardItemModel *>(ui->disksTree->model());
+
+    // Empty them out.
+    showsModel->removeRows(0, showsModel->rowCount());
+    disksModel->removeRows(0, disksModel->rowCount());
+
+    // Populate show listing
+    for (auto& entry : *appModel->shows()) {
+        auto showId = entry.id;
+        auto showItem = new QStandardItem(q(entry.title));
+
+        showsModel->invisibleRootItem()
+            ->appendRow(showItem);
+
+        for (auto& entry : *appModel->episodes()) {
+            if (showId == entry.showId) {
+                auto episodeItem = new QStandardItem(q(entry.friendlyTitle()));
+                if (appModel->isIdentified(std::format("{}", entry.id))) {
+                    episodeItem->setForeground(QBrush(QColor("orange")));
+                }
+                episodeItem->setData(q(std::format("{}", entry.id)), Qt::UserRole);
+                showItem->appendRow(episodeItem);
+            }
+        }
+    }
+
+    // Populate disk listing
+    std::unordered_map<std::string, QStandardItem*> disks;
+    for (auto& title : *appModel->titles()) {
+        if (!disks.contains(title.diskName())) {
+            auto diskItem = new QStandardItem(q(title.diskName()));
+            diskItem->setSelectable(false);
+            disksModel->invisibleRootItem()
+                ->appendRow(diskItem);
+
+            if (appModel->isIdentified(std::format("{}", title.id))) {
+                diskItem->setForeground(QBrush(QColor("orange")));
+            }
+            diskItem->setData(q(std::format("{}", title.id)), Qt::UserRole);
+
+            diskItem->appendRow(new QStandardItem(q(title.friendlyTitle())));
+            disks[title.diskName()] = diskItem;
+        } else {
+            auto diskItem = disks[title.diskName()];
+            if (appModel->isIdentified(std::format("{}", title.id))) {
+                diskItem->setForeground(QBrush(QColor("orange")));
+            }
+            diskItem->setData(q(std::format("{}", title.id)), Qt::UserRole);
+            diskItem->appendRow(new QStandardItem(q(title.friendlyTitle())));
+        }
+    }
+
+    ui->showsTree->expandAll();
+    ui->disksTree->expandAll();
+}
+
+void MainWindow::setAppModel(AppModel *theModel) {
+    appModel = theModel;
+
+    // Initial population of UI from `theModel`.
+    ui->tmdbApiKey->setText(q(appModel->tmdbApiKey()));
+    ui->tmdbModeBtn->setText(q(appModel->tmdbMode()));
+
+    // Initialize tree models
+    auto* disksModel = new QStandardItemModel(this);
+    auto* showsModel = new QStandardItemModel(this);
+    disksModel->setHorizontalHeaderLabels({ "Disks" });
+    showsModel->setHorizontalHeaderLabels({ "Shows" });
+    ui->disksTree->setModel(disksModel);
+    ui->showsTree->setModel(showsModel);
+
+    _reflowTrees();
+
+    ui->disksTree->setRootIsDecorated(false);
+    ui->disksTree->setItemsExpandable(false);
+}
+
+MainWindow::MainWindow(QWidget *parent)
+	: QMainWindow(parent), ui(new Ui::MainWindow)
+{
+	ui->setupUi(this);
+
+	QObject::connect(ui->playBtn, &QPushButton::clicked, [&]() {
+        QModelIndex index = ui->disksTree->currentIndex();
+        if (index.isValid()) {
+            QVariant data = index.model()->data(index, Qt::UserRole);
+            QString text = data.toString();
+
+            video = new Phonon::MediaSource(text);
+
+            ui->videoPlayer->play(*video);
+        }
+    });
+
+	QObject::connect(ui->tmdbFetchBtn, &QPushButton::clicked, [&]() {
+        // Check if response is already on disk.
+        bool isTv = ui->tmdbModeBtn->text() == "TV";
+        auto subdir = appModel->configDirPath() / (isTv ? "tv" : "films");
+        std::ifstream t(subdir / (ui->tmdbId->text().toStdString() + ".json"));
+        std::stringstream buffer;
+        buffer << t.rdbuf();
+        auto json = buffer.str();
+        if (json.length() > 0) {
+            qDebug() << "Data from file: " << json;
+            return;
+        }
+
+        // Save the API key
+        appModel->setTmdbApiKey(ui->tmdbApiKey->text().toStdString());
+
+        // Make the cmd
+        auto cmd = std::format(
+            "curl https://api.themoviedb.org/3/{}/{} --header 'Authorization: bearer {}' -o {}/{}.json",
+            isTv ? "tv" : "movie",
+            ui->tmdbId->text().toStdString(),
+            ui->tmdbApiKey->text().toStdString(),
+            subdir.string(),
+            ui->tmdbId->text().toStdString()
+        );
+
+        // Should do on background thread.
+        exec(cmd.c_str());
+
+        // Get seasons
+        if (isTv) {
+            int numSeasons = 2;
+            for (int i = numSeasons; i > 0; i--) {
+                // Make the cmd
+                auto cmd = std::format(
+                    "curl https://api.themoviedb.org/3/{}/{}/season/{}.json --header 'Authorization: bearer {}' -o {}/{}-S{}.json",
+                    isTv ? "tv" : "movie",
+                    ui->tmdbId->text().toStdString(),
+                    i,
+                    ui->tmdbApiKey->text().toStdString(),
+                    subdir.string(),
+                    ui->tmdbId->text().toStdString(),
+                    i
+                );
+
+                // Should do on background thread.
+                exec(cmd.c_str());
+            }
+        }
+    });
+
+    QObject::connect(ui->tmdbModeBtn, &QPushButton::clicked, [&]() {
+        appModel->toggleTmdbMode();
+        ui->tmdbModeBtn->setText(q(appModel->tmdbMode()));
+    });
+
+    QObject::connect(ui->identifyBtn, &QPushButton::clicked, [&]() {
+        QModelIndex index = ui->showsTree->currentIndex();
+        if (!index.isValid()) {
+            return;
+        }
+        QVariant data = index.model()->data(index, Qt::UserRole);
+        QString text = data.toString();
+
+        QModelIndex index2 = ui->disksTree->currentIndex();
+        if (!index2.isValid()) {
+            return;
+        }
+        QVariant data2 = index2.model()->data(index2, Qt::UserRole);
+        QString text2 = data2.toString();
+
+        appModel->identifyEpisode(text2.toStdString(), text.toStdString());
+
+        _reflowTrees();
+    });
+}
+
+MainWindow::~MainWindow()
+{
+	delete ui;
+}
