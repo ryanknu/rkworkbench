@@ -3,29 +3,13 @@
 #include "./ui_mainwindow.h"
 #include <QDebug>
 #include <QThread>
+#include <QMenu>
 #include <fstream>
 #include <string>
 #include <format>
 #include <unordered_map>
 
 namespace fs = std::filesystem;
-
-std::string exec(const char* cmd) {
-    char buffer[128];
-    std::string result = "";
-    FILE* pipe = popen(cmd, "r");
-    if (!pipe) throw std::runtime_error("popen() failed!");
-    try {
-        while (fgets(buffer, sizeof buffer, pipe) != NULL) {
-            result += buffer;
-        }
-    } catch (...) {
-        pclose(pipe);
-        throw;
-    }
-    pclose(pipe);
-    return result;
-}
 
 QString q(std::string str)
 {
@@ -178,6 +162,24 @@ MainWindow::MainWindow(QWidget *parent)
 	connect(thread, &QThread::started, worker, &CommandWorker::processQueue);
 	thread->start();
 
+	// Set context menu
+	ui->showsTree->setContextMenuPolicy(Qt::CustomContextMenu);
+
+	QObject::connect(ui->showsTree, &QWidget::customContextMenuRequested, [&](const QPoint &pos) {
+	    auto index = ui->showsTree->indexAt(pos);
+		if (!index.isValid()) {
+		    return;
+		}
+
+		QMenu menu;
+		menu.addAction(q("Upload")); // processed (green)
+		auto deleteMenu = menu.addMenu(q("Delete Stuff"));
+		deleteMenu->addAction(q("Delete Show"));
+		deleteMenu->addAction(q("Delete Season"));
+
+		menu.exec(ui->showsTree->viewport()->mapToGlobal(pos));
+	});
+
 	// Button handlers
 	QObject::connect(ui->playBtn, &QPushButton::clicked, [&]() {
         QModelIndex index = ui->disksTree->currentIndex();
@@ -222,27 +224,6 @@ MainWindow::MainWindow(QWidget *parent)
         if (isTv) {
             _queueTask(format("_scanFsForShow {}", showId));
         }
-
-        // Get seasons
-        // if (isTv) {
-        //     int numSeasons = 2;
-        //     for (int i = numSeasons; i > 0; i--) {
-        //         // Make the cmd
-        //         auto cmd = std::format(
-        //             "curl https://api.themoviedb.org/3/{}/{}/season/{}.json --header 'Authorization: bearer {}' -o {}/{}-S{}.json",
-        //             isTv ? "tv" : "movie",
-        //             ui->tmdbId->text().toStdString(),
-        //             i,
-        //             ui->tmdbApiKey->text().toStdString(),
-        //             subdir.string(),
-        //             ui->tmdbId->text().toStdString(),
-        //             i
-        //         );
-
-        //         // Should do on background thread.
-        //         exec(cmd.c_str());
-        //     }
-        // }
     });
 
     QObject::connect(ui->tmdbModeBtn, &QPushButton::clicked, [&]() {
