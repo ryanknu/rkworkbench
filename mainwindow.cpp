@@ -1,6 +1,8 @@
+#include "commandworker.h"
 #include "mainwindow.h"
 #include "./ui_mainwindow.h"
 #include <QDebug>
+#include <QThread>
 #include <fstream>
 #include <string>
 #include <format>
@@ -95,11 +97,18 @@ void MainWindow::_reflowTaskList()
 {
     // Get the model
     auto* model = dynamic_cast<QStringListModel *>(ui->tasksList->model());
-
     auto stringList = new QStringList();
+    int i = 0;
+    int t = appModel->queuedAndPendingJobs();
+    int c = appModel->tasks()->size();
 
     for (auto& task : *appModel->tasks()) {
-        stringList->append(q(task));
+        i++;
+        auto text = i < (c - t)
+            ? std::format("[DONE] {}", task)
+            : task;
+
+        stringList->append(q(text));
     }
 
     model->setStringList(*stringList);
@@ -109,6 +118,13 @@ void MainWindow::_reflowTaskList()
     } else {
         ui->tasksList->setMaximumHeight(200);
     }
+}
+
+void MainWindow::_queueTask(std::string cmd)
+{
+    appModel->pushTask(cmd);
+    worker->addCommand(cmd);
+    _reflowTaskList();
 }
 
 /**
@@ -155,6 +171,14 @@ MainWindow::MainWindow(QWidget *parent)
 {
 	ui->setupUi(this);
 
+	// Spin up background thread
+	worker = new CommandWorker();
+	QThread *thread = new QThread();
+	worker->moveToThread(thread);
+	connect(thread, &QThread::started, worker, &CommandWorker::processQueue);
+	thread->start();
+
+	// Button handlers
 	QObject::connect(ui->playBtn, &QPushButton::clicked, [&]() {
         QModelIndex index = ui->disksTree->currentIndex();
         if (index.isValid()) {
@@ -169,8 +193,9 @@ MainWindow::MainWindow(QWidget *parent)
 
 	QObject::connect(ui->tmdbFetchBtn, &QPushButton::clicked, [&]() {
         // Check if response is already on disk.
+        auto showId = ui->tmdbId->text().toStdString();
         bool isTv = ui->tmdbModeBtn->text() == "TV";
-        auto subdir = appModel->configDirPath() / (isTv ? "tv" : "films");
+        auto subdir = isTv ? appModel->tvDirectory() : appModel->filmDirectory();
         std::ifstream t(subdir / (ui->tmdbId->text().toStdString() + ".json"));
         std::stringstream buffer;
         buffer << t.rdbuf();
@@ -185,7 +210,7 @@ MainWindow::MainWindow(QWidget *parent)
 
         // Make the cmd
         auto cmd = std::format(
-            "curl https://api.themoviedb.org/3/{}/{} --header 'Authorization: bearer {}' -o {}/{}.json",
+            "curl https://api.themoviedb.org/3/{}/{} --header \"Authorization: bearer {}\" -o {}/{}.json",
             isTv ? "tv" : "movie",
             ui->tmdbId->text().toStdString(),
             ui->tmdbApiKey->text().toStdString(),
@@ -193,29 +218,31 @@ MainWindow::MainWindow(QWidget *parent)
             ui->tmdbId->text().toStdString()
         );
 
-        // Should do on background thread.
-        exec(cmd.c_str());
+        _queueTask(cmd);
+        if (isTv) {
+            _queueTask(format("_scanFsForShow {}", showId));
+        }
 
         // Get seasons
-        if (isTv) {
-            int numSeasons = 2;
-            for (int i = numSeasons; i > 0; i--) {
-                // Make the cmd
-                auto cmd = std::format(
-                    "curl https://api.themoviedb.org/3/{}/{}/season/{}.json --header 'Authorization: bearer {}' -o {}/{}-S{}.json",
-                    isTv ? "tv" : "movie",
-                    ui->tmdbId->text().toStdString(),
-                    i,
-                    ui->tmdbApiKey->text().toStdString(),
-                    subdir.string(),
-                    ui->tmdbId->text().toStdString(),
-                    i
-                );
+        // if (isTv) {
+        //     int numSeasons = 2;
+        //     for (int i = numSeasons; i > 0; i--) {
+        //         // Make the cmd
+        //         auto cmd = std::format(
+        //             "curl https://api.themoviedb.org/3/{}/{}/season/{}.json --header 'Authorization: bearer {}' -o {}/{}-S{}.json",
+        //             isTv ? "tv" : "movie",
+        //             ui->tmdbId->text().toStdString(),
+        //             i,
+        //             ui->tmdbApiKey->text().toStdString(),
+        //             subdir.string(),
+        //             ui->tmdbId->text().toStdString(),
+        //             i
+        //         );
 
-                // Should do on background thread.
-                exec(cmd.c_str());
-            }
-        }
+        //         // Should do on background thread.
+        //         exec(cmd.c_str());
+        //     }
+        // }
     });
 
     QObject::connect(ui->tmdbModeBtn, &QPushButton::clicked, [&]() {
@@ -235,6 +262,44 @@ MainWindow::MainWindow(QWidget *parent)
     QObject::connect(ui->execBtn, &QPushButton::clicked, [&]() {
         appModel->enqueueAllJobs();
         _reflowTaskList();
+    });
+
+    QObject::connect(worker, &CommandWorker::commandCompleted, [&]() {
+        appModel->popTask();
+        _reflowTaskList();
+    });
+
+    QObject::connect(worker, &CommandWorker::reflowAll, [&]() {
+        _reflowTrees();
+        _reflowTaskList();
+    });
+
+    QObject::connect(worker, &CommandWorker::scanFilesystemForShow, [&](int showId) {
+        appModel->scanLocalTmdbData();
+        _reflowTrees();
+        if (showId == 0) {
+            return;
+        }
+
+        for (auto& show : *appModel->shows()) {
+            if (show.id == showId) {
+                for (auto seasonNr : show.seasons) {
+                    auto cmd = std::format(
+                        "curl https://api.themoviedb.org/3/tv/{}/season/{}.json --header \"Authorization: bearer {}\" -o {}/{}-S{:02}.json",
+                        showId,
+                        seasonNr,
+                        ui->tmdbApiKey->text().toStdString(), // It would be nice to save this when the user starts fetching so they can't mess it up.
+                        appModel->tvDirectory().string(),
+                        showId,
+                        seasonNr
+                    );
+
+                    _queueTask(cmd);
+                    _queueTask("_scanFsForShow 0"); // TODO: make scanFsForAll or something
+                }
+                break;
+            }
+        }
     });
 }
 

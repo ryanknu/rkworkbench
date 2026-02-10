@@ -30,7 +30,7 @@ AppModel::AppModel()
 	// Initialize
 	_createDirectories();
 	_readApiKey();
-	_scanLocalTmdbData();
+	scanLocalTmdbData();
 	_scanLocalTitles();
 }
 
@@ -67,20 +67,20 @@ std::string AppModel::tmdbMode()
     return _mTmdbMode == TmdbMode::TV ? "TV" : "Film";
 }
 
-fs::path AppModel::_tvDirectory()
+fs::path AppModel::tvDirectory()
 {
     return _mConfigDirPath / "tv";
 }
 
-fs::path AppModel::_filmDirectory()
+fs::path AppModel::filmDirectory()
 {
     return _mConfigDirPath / "films";
 }
 
 void AppModel::_createDirectories()
 {
-   	fs::create_directories(_tvDirectory());
-	fs::create_directories(_filmDirectory());
+   	fs::create_directories(tvDirectory());
+	fs::create_directories(filmDirectory());
 	fs::create_directories(_mWorkingDirPath / "output");
 }
 
@@ -139,11 +139,13 @@ bool detectSeasonJson(const fs::path& path) {
 /**
  * Scans the local filesystem for cached TMBD data.
  */
-void AppModel::_scanLocalTmdbData()
+void AppModel::scanLocalTmdbData()
 {
+    _mShows = { };
+    _mEpisodes = { };
+
     struct TvShowData {
         int id;
-        int number_of_seasons;
         std::string first_air_date;
         std::string name;
     };
@@ -156,23 +158,26 @@ void AppModel::_scanLocalTmdbData()
         std::string name;
     };
 
-    for (const auto& entry : fs::directory_iterator(_tvDirectory())) {
+    for (const auto& entry : fs::directory_iterator(tvDirectory())) {
         if (detectShowJson(entry.path())) {
             std::ifstream ifs(entry.path());
             json jf = json::parse(ifs);
 
             TvShowData parsed {
                 jf["id"].get<int>(),
-                jf["number_of_seasons"].get<int>(), // This is inferior to using seasons.map(s => s.season_number) to get a vec<int>.
                 jf["first_air_date"].get<std::string>(),
                 jf["name"].get<std::string>()
             };
 
             Show* show = new Show(
                 parsed.id,
-                parsed.number_of_seasons,
                 std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id)
             );
+
+            for (auto& sejson : jf["seasons"]) {
+                show->pushSeason(sejson["season_number"].get<int>());
+            }
+
             _mShows.push_back(*show);
         }
 
@@ -235,11 +240,16 @@ void AppModel::_scanLocalTitles()
     }
 }
 
-Show::Show(int _id, int _seasons, std::string _title)
+Show::Show(int _id, std::string _title)
 {
     id = _id;
-    seasons = _seasons;
+    seasons = { };
     title = _title;
+}
+
+void Show::pushSeason(int season)
+{
+    seasons.push_back(season);
 }
 
 Episode::Episode(int _id, int _season, int _number, int _showId, std::string _title)
@@ -333,16 +343,12 @@ std::string RippedTitle::friendlyTitle()
 void AppModel::pushTask(std::string task)
 {
     _mTasks.push_back(task);
+    _mQueuedAndPendingJobs ++;
 }
 
-std::string AppModel::popTask()
+void AppModel::popTask()
 {
-    if (_mTasks.empty()) {
-        return "";
-    }
-    auto ret = _mTasks.front();
-    _mTasks.erase(_mTasks.begin());
-    return ret;
+    _mQueuedAndPendingJobs --;
 }
 
 /**
@@ -387,4 +393,9 @@ void AppModel::enqueueAllJobs()
 fs::path RippedTitle::path()
 {
     return _mPath;
+}
+
+int AppModel::queuedAndPendingJobs()
+{
+    return _mQueuedAndPendingJobs;
 }

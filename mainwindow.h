@@ -6,6 +6,7 @@
 #include <QTreeView>
 #include "phonon/mediasource.h"
 #include "model.h"
+#include "commandworker.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -27,8 +28,10 @@ private:
 	Phonon::MediaSource *video;
 	std::filesystem::path configPath;
 	AppModel *appModel;
+	CommandWorker *worker;
 
 	void _reflowTrees();
 	void _reflowTaskList();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
+	void _queueTask(std::string cmd);
 };

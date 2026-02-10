@@ -25,7 +25,7 @@ class AppModel {
         void toggleTmdbMode();
         std::vector<std::string> *tasks();
         void pushTask(std::string task);
-        std::string popTask();
+        void popTask();
         std::vector<Show> *shows();
         std::vector<Episode> *episodes();
         std::vector<RippedTitle> *titles();
@@ -33,29 +33,39 @@ class AppModel {
         void identifyEpisode(std::string titleId, std::string showId);
         bool isIdentified(std::string item);
         void enqueueAllJobs();
+        int queuedAndPendingJobs();
+        void scanLocalTmdbData();
+
+        // I need to expose these because the UI generates cURL commands...
+        // Maybe a better pattern is to have appModel generate them.
+        std::filesystem::path tvDirectory();
+        std::filesystem::path filmDirectory();
 
     private:
+        // Media data
         TmdbMode _mTmdbMode;
         std::vector<Show> _mShows;
         std::vector<Episode> _mEpisodes;
         std::vector<RippedTitle> _mTitles;
-        std::vector<std::string> _mTasks;
         std::unordered_map<std::string, std::string> _mIdentifiedEpisodes;
 
+        // Configurations
         std::filesystem::path _mConfigDirPath;
         std::filesystem::path _mWorkingDirPath;
         std::string _mTmdbApiKey;
         std::string _mPreprocessorCommand;
 
+        // Task worker
+        std::vector<std::string> _mTasks;
+        int _mQueuedAndPendingJobs = 0;
+
+        // Sequences
         std::atomic<std::uint64_t> _mIdSequence{1};
 
         void _createDirectories();
         RippedTitle* _newRippedTitle(std::filesystem::path path, std::uintmax_t size, std::string diskName, std::string titleName);
         void _readApiKey();
         void _writeApiKey();
-        std::filesystem::path _tvDirectory();
-        std::filesystem::path _filmDirectory();
-        void _scanLocalTmdbData();
         void _scanLocalTitles();
 };
 
@@ -78,11 +88,12 @@ class RippedTitle
 class Show
 {
     public:
-        Show(int _id, int _seasons, std::string title);
+        Show(int _id, std::string title);
         int id;
-        int seasons;
-
+        std::vector<int> seasons;
         std::string title;
+
+        void pushSeason(int season);
 };
 
 class Episode
