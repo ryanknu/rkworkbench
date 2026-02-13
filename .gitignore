@@ -2,3 +2,5 @@ moc_*
 ui_*
 run
 *.kdev4
+CMakeLists.txt
+cmake-build-debug

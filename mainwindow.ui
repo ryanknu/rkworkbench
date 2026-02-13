@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1167</width>
-    <height>780</height>
+    <height>817</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -58,9 +58,66 @@
          <number>0</number>
         </property>
         <item>
-         <widget class="QPushButton" name="playBtn">
-          <property name="text">
-           <string>Play Selected</string>
+         <layout class="QHBoxLayout" name="videoControlsHLayout">
+          <item>
+           <widget class="QPushButton" name="seekRev">
+            <property name="maximumSize">
+             <size>
+              <width>25</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>&lt;</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="seekPos">
+            <property name="maximumSize">
+             <size>
+              <width>100</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="placeholderText">
+             <string>Time (ms)</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="seekFwd">
+            <property name="maximumSize">
+             <size>
+              <width>25</width>
+              <height>16777215</height>
+             </size>
+            </property>
+            <property name="text">
+             <string>&gt;</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="playBtn">
+            <property name="text">
+             <string>Play</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="pauseBtn">
+            <property name="text">
+             <string>Pause</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
+        </item>
+        <item>
+         <widget class="QSlider" name="videoSeek">
+          <property name="orientation">
+           <enum>Qt::Orientation::Horizontal</enum>
           </property>
          </widget>
         </item>
@@ -85,6 +142,13 @@
          <widget class="QPushButton" name="execBtn">
           <property name="text">
            <string>Rename Identified</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="gcBtn">
+          <property name="text">
+           <string>Collect Garbage (Not Implemented)</string>
           </property>
          </widget>
         </item>

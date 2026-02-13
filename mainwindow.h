@@ -20,8 +20,8 @@ class MainWindow : public QMainWindow
 	Q_OBJECT
 
 public:
-	MainWindow(QWidget *parent = nullptr);
-	~MainWindow();
+	explicit MainWindow(QWidget *parent = nullptr);
+	~MainWindow() override;
 	void setAppModel(AppModel *theModel);
 
 private:
@@ -31,8 +31,10 @@ private:
 	CommandWorker *worker;
 	QMediaPlayer *player;
 
-	void _reflowTrees();
+	void _reflowTrees() const;
 	void _reflowTaskList();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _queueTask(std::string cmd);
+	void _queueTasks(std::vector<std::string> cmds);
+	int _getRequestedPosition();
 };

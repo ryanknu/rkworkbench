@@ -19,7 +19,7 @@ class AppModel {
         AppModel();
         std::filesystem::path configDirPath();
         std::filesystem::path workingDirPath();
-        std::string tmdbMode();
+        std::string tmdbMode() const;
         std::string tmdbApiKey();
         void setTmdbApiKey(std::string apiKey);
         void toggleTmdbMode();
@@ -37,12 +37,16 @@ class AppModel {
         void scanLocalTmdbData();
         void scanLocalTitles();
         bool showHasLocalFile(std::string showName, std::string seasonKey);
+        std::vector<std::string> getCommandsToDeleteFileForTitle(std::string titleId);
+        std::vector<std::string> getCommandsToUnDeleteFileForTitle(std::string titleId);
+        int requestedPosition();
+        void setRequestedPosition(int position);
 
         // I need to expose these because the UI generates cURL commands...
         // Maybe a better pattern is to have appModel generate them.
-        std::filesystem::path tvDirectory();
-        std::filesystem::path filmDirectory();
-        std::filesystem::path outputDirectory();
+        std::filesystem::path tvDirectory() const;
+        std::filesystem::path filmDirectory() const;
+        std::filesystem::path outputDirectory() const;
 
     private:
         // Media data
@@ -66,10 +70,13 @@ class AppModel {
         // Sequences
         std::atomic<std::uint64_t> _mIdSequence{1};
 
-        void _createDirectories();
+        // Media player
+        int _mRequestedPosition = 0;
+
+        void _createDirectories() const;
         RippedTitle* _newRippedTitle(std::filesystem::path path, std::uintmax_t size, std::string diskName, std::string titleName);
         void _readApiKey();
-        void _writeApiKey();
+        void _writeApiKey() const;
 };
 
 class RippedTitle

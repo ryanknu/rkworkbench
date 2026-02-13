@@ -12,7 +12,7 @@
 
 namespace fs = std::filesystem;
 
-QString q(std::string str)
+QString q(const std::string& str)
 {
     return QString::fromStdString(str);
 }
@@ -21,8 +21,7 @@ QString q(std::string str)
  * Redraws the UI for the two trees from data in appModel
  * I'm aware this pattern has flaws.
  */
-void MainWindow::_reflowTrees()
-{
+void MainWindow::_reflowTrees() const {
     // Get the tree models
     auto* showsModel = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
     auto* disksModel = dynamic_cast<QStandardItemModel *>(ui->disksTree->model());
@@ -32,24 +31,24 @@ void MainWindow::_reflowTrees()
     disksModel->removeRows(0, disksModel->rowCount());
 
     // Populate show listing
-    for (auto& entry : *appModel->shows()) {
-        auto showId = entry.id;
-        auto showName = entry.title;
-        auto showItem = new QStandardItem(q(showName));
+    for (const auto& show : *appModel->shows()) {
+        const auto showId = show.id;
+        auto showName = show.title;
+        const auto showItem = new QStandardItem(q(showName));
 
         showsModel->invisibleRootItem()
             ->appendRow(showItem);
 
-        for (auto& entry : *appModel->episodes()) {
-            if (showId == entry.showId) {
-                auto episodeItem = new QStandardItem(q(entry.friendlyTitle()));
-                if (appModel->showHasLocalFile(showName, entry.seasonKey())) {
+        for (auto& episode : *appModel->episodes()) {
+            if (showId == episode.showId) {
+                auto episodeItem = new QStandardItem(q(episode.friendlyTitle()));
+                if (appModel->showHasLocalFile(showName, episode.seasonKey())) {
                     episodeItem->setForeground(QBrush(QColor("green")));
                 }
-                else if (appModel->isIdentified(std::format("{}", entry.id))) {
+                else if (appModel->isIdentified(std::format("{}", episode.id))) {
                     episodeItem->setForeground(QBrush(QColor("orange")));
                 }
-                episodeItem->setData(q(std::format("{}", entry.id)), Qt::UserRole);
+                episodeItem->setData(q(std::format("{}", episode.id)), Qt::UserRole);
                 showItem->appendRow(episodeItem);
             }
         }
@@ -60,7 +59,10 @@ void MainWindow::_reflowTrees()
     for (auto& title : *appModel->titles()) {
         auto titleItem = new QStandardItem(q(title.friendlyTitle()));
         titleItem->setData(q(std::format("{}", title.id)), Qt::UserRole);
-        if (appModel->isIdentified(std::format("{}", title.id))) {
+        if (title.path().string().ends_with(".d")) {
+            titleItem->setForeground(QBrush(QColor("red")));
+        }
+        else if (appModel->isIdentified(std::format("{}", title.id))) {
             titleItem->setForeground(QBrush(QColor("orange")));
         }
 
@@ -116,6 +118,24 @@ void MainWindow::_queueTask(std::string cmd)
     _reflowTaskList();
 }
 
+void MainWindow::_queueTasks(std::vector<std::string> cmds)
+{
+    for (auto& cmd : cmds) {
+        _queueTask(cmd);
+    }
+}
+
+int MainWindow::_getRequestedPosition() {
+    int pos;
+    try {
+        pos = std::stoi(ui->seekPos->text().toStdString());
+    } catch (...) {
+        pos = 0;
+    }
+
+    return pos;
+}
+
 /**
  * Retrieves the ID of the selected item in the tree.
  * Assumes the ID is set as the UserRole data on item in the data model.
@@ -153,6 +173,22 @@ void MainWindow::setAppModel(AppModel *theModel) {
 
     ui->disksTree->setRootIsDecorated(false);
     ui->disksTree->setItemsExpandable(false);
+
+    // When selecting an entry on the disks tree, load item in player.
+    connect(ui->disksTree->selectionModel(), &QItemSelectionModel::selectionChanged, [&](const QItemSelection &, const QItemSelection &) {
+        auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
+        for (auto& title : *appModel->titles()) {
+            if (std::format("{}", title.id) == titleId) {
+                if (_getRequestedPosition() != 0) {
+                    appModel->setRequestedPosition(_getRequestedPosition());
+                }
+
+                player->setSource(QUrl::fromLocalFile(q(title.path().string())));
+                player->play();
+                player->pause();
+            }
+        }
+    });
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -162,19 +198,79 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Spin up background thread
     worker = new CommandWorker();
-    QThread *thread = new QThread();
+    auto *thread = new QThread();
     worker->moveToThread(thread);
     connect(thread, &QThread::started, worker, &CommandWorker::processQueue);
     thread->start();
 
-    // Connect media player to output source
+    // Connect media player
     player = new QMediaPlayer;
     player->setVideoOutput(ui->videoWidget);
+    connect(player, &QMediaPlayer::durationChanged, [&](int v) {
+        ui->videoSeek->setMaximum(v);
+    });
+    connect(player, &QMediaPlayer::positionChanged, [&](int v) {
+        ui->videoSeek->setValue(v);
+        ui->seekPos->setText(q(std::format("{}", v)));
+    });
+    connect(ui->videoSeek, &QSlider::sliderMoved, [&](int v) {
+        player->setPosition(v);
+        ui->seekPos->setText(q(std::format("{}", v)));
+    });
+    connect(ui->seekFwd, &QPushButton::clicked, [&] {
+        auto pos = player->position();
+        player->setPosition(pos + 42);
+    });
+    connect(ui->seekRev, &QPushButton::clicked, [&] {
+        auto pos = player->position();
+        player->setPosition(pos - 42);
+    });
 
-    // Set context menu
+    // Media player, when the content loads, skip to requested position.
+    connect(player, &QMediaPlayer::mediaStatusChanged, [&](QMediaPlayer::MediaStatus status) {
+        if (status == QMediaPlayer::BufferedMedia) {
+            player->setPosition(appModel->requestedPosition());
+        }
+    });
+
+    // Set context menu on titles
+    ui->disksTree->setContextMenuPolicy(Qt::CustomContextMenu);
+
+    connect(ui->disksTree, &QWidget::customContextMenuRequested, [&](const QPoint &pos) {
+        // TODO: See if this works with the selectedItem helper fn
+        auto index = ui->disksTree->indexAt(pos);
+        if (!index.isValid()) {
+            return;
+        }
+
+        QMenu menu;
+        QAction * deleteAction = menu.addAction(q("Delete Title"));
+        QAction * unDeleteAction = menu.addAction(q("Undelete Title"));
+
+        connect(deleteAction, &QAction::triggered, [&]() {
+            // Stop the media player, if we remove the file it's accessing we'll segfault.
+            player->stop();
+            player->setSource(QUrl());
+
+            auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
+            auto cmds = appModel->getCommandsToDeleteFileForTitle(titleId);
+            _queueTasks(cmds);
+        });
+
+        connect(unDeleteAction, &QAction::triggered, [&]() {
+            auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
+            auto cmds = appModel->getCommandsToUnDeleteFileForTitle(titleId);
+            _queueTasks(cmds);
+        });
+
+        menu.exec(ui->disksTree->viewport()->mapToGlobal(pos));
+    });
+
+    // Set context menu on shows
     ui->showsTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
-    QObject::connect(ui->showsTree, &QWidget::customContextMenuRequested, [&](const QPoint &pos) {
+    connect(ui->showsTree, &QWidget::customContextMenuRequested, [&](const QPoint &pos) {
+        // TODO: See if this works with the selectedItem helper fn
         auto index = ui->showsTree->indexAt(pos);
         if (!index.isValid()) {
             return;
@@ -182,12 +278,13 @@ MainWindow::MainWindow(QWidget *parent)
 
         QMenu menu;
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
+        menu.addAction(q("Confirm Plays (not implemented)"));
 
         // TODO: Upload Episode, disabled if not green
         //       Make Delete show and season work.
         auto deleteMenu = menu.addMenu(q("Delete Stuff"));
-        deleteMenu->addAction(q("Delete Show"));
-        deleteMenu->addAction(q("Delete Season"));
+        deleteMenu->addAction(q("Delete Show (not implemented)"));
+        deleteMenu->addAction(q("Delete Season (not implemented)"));
 
         connect(uploadAction, &QAction::triggered, [&]() {
             auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
@@ -214,17 +311,15 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     // Button handlers
-    QObject::connect(ui->playBtn, &QPushButton::clicked, [&]() {
-        auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-        for (auto& title : *appModel->titles()) {
-            if (std::format("{}", title.id) == titleId) {
-                player->setSource(QUrl::fromLocalFile(q(title.path().string())));
-                player->play();
-            }
-        }
+    connect(ui->playBtn, &QPushButton::clicked, [&]() {
+        player->play();
     });
 
-    QObject::connect(ui->tmdbFetchBtn, &QPushButton::clicked, [&]() {
+    connect(ui->pauseBtn, &QPushButton::clicked, [&]() {
+        player->pause();
+    });
+
+    connect(ui->tmdbFetchBtn, &QPushButton::clicked, [&]() {
         // Check if response is already on disk.
         auto showId = ui->tmdbId->text().toStdString();
         bool isTv = ui->tmdbModeBtn->text() == "TV";
@@ -257,12 +352,12 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
 
-    QObject::connect(ui->tmdbModeBtn, &QPushButton::clicked, [&]() {
+    connect(ui->tmdbModeBtn, &QPushButton::clicked, [&]() {
         appModel->toggleTmdbMode();
         ui->tmdbModeBtn->setText(q(appModel->tmdbMode()));
     });
 
-    QObject::connect(ui->identifyBtn, &QPushButton::clicked, [&]() {
+    connect(ui->identifyBtn, &QPushButton::clicked, [&]() {
         auto showId = _getIdForSelectedItemInTree(ui->showsTree);
         auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
 
@@ -271,29 +366,27 @@ MainWindow::MainWindow(QWidget *parent)
         _reflowTrees();
     });
 
-    QObject::connect(ui->execBtn, &QPushButton::clicked, [&]() {
+    connect(ui->execBtn, &QPushButton::clicked, [&]() {
         auto jobs = appModel->generateJobsFromState();
-        for (auto& job : jobs) {
-            _queueTask(job);
-        }
+        _queueTasks(jobs);
     });
 
-    QObject::connect(worker, &CommandWorker::commandCompleted, [&]() {
+    connect(worker, &CommandWorker::commandCompleted, [&]() {
         appModel->popTask();
         _reflowTaskList();
     });
 
-    QObject::connect(worker, &CommandWorker::reflowAll, [&]() {
+    connect(worker, &CommandWorker::reflowAll, [&]() {
         _reflowTrees();
         _reflowTaskList();
     });
 
-    QObject::connect(worker, &CommandWorker::scanLocalTitles, [&]() {
+    connect(worker, &CommandWorker::scanLocalTitles, [&]() {
         appModel->scanLocalTitles();
         _reflowTrees();
     });
 
-    QObject::connect(worker, &CommandWorker::scanFilesystemForShow, [&](int showId) {
+    connect(worker, &CommandWorker::scanFilesystemForShow, [&](int showId) {
         appModel->scanLocalTmdbData();
         _reflowTrees();
         if (showId == 0) {

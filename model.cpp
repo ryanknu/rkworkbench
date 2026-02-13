@@ -5,6 +5,7 @@
 #include <QDebug>
 #include <nlohmann/json.hpp>
 #include <regex>
+#include <utility>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -51,38 +52,32 @@ std::string AppModel::tmdbApiKey()
 
 void AppModel::setTmdbApiKey(std::string apiKey)
 {
-    _mTmdbApiKey = apiKey;
+    _mTmdbApiKey = std::move(apiKey);
     _writeApiKey();
 }
 
 void AppModel::toggleTmdbMode()
 {
-    _mTmdbMode = _mTmdbMode == TmdbMode::TV
-        ? TmdbMode::FILM
-        : TmdbMode::TV;
+    _mTmdbMode = _mTmdbMode == TV ? FILM : TV;
 }
 
-std::string AppModel::tmdbMode()
-{
-    return _mTmdbMode == TmdbMode::TV ? "TV" : "Film";
+std::string AppModel::tmdbMode() const {
+    return _mTmdbMode == TV ? "TV" : "Film";
 }
 
-fs::path AppModel::tvDirectory()
-{
+fs::path AppModel::tvDirectory() const {
     return _mConfigDirPath / "tv";
 }
 
-fs::path AppModel::filmDirectory()
-{
+fs::path AppModel::filmDirectory() const {
     return _mConfigDirPath / "films";
 }
 
-fs::path AppModel::outputDirectory()
-{
+fs::path AppModel::outputDirectory() const {
     return _mWorkingDirPath / "output";
 }
 
-void AppModel::_createDirectories()
+void AppModel::_createDirectories() const
 {
    	fs::create_directories(tvDirectory());
 	fs::create_directories(filmDirectory());
@@ -97,8 +92,7 @@ void AppModel::_readApiKey()
     _mTmdbApiKey = buffer.str();
 }
 
-void AppModel::_writeApiKey()
-{
+void AppModel::_writeApiKey() const {
     fs::path of = _mConfigDirPath / "tmdb.key";
     std::ofstream output_file;
     output_file.open(of);
@@ -119,7 +113,7 @@ bool detectShowJson(const fs::path& p) {
     std::string stem = p.stem().string();
 
     // 3. Check if stem is not empty and consists only of digits
-    return !stem.empty() && std::all_of(stem.begin(), stem.end(), ::isdigit);
+    return !stem.empty() && std::ranges::all_of(stem, ::isdigit);
 }
 
 /**
@@ -127,7 +121,7 @@ bool detectShowJson(const fs::path& p) {
  */
 bool detectSeasonJson(const fs::path& path) {
     // Get the filename as a string
-    std::string filename = path.filename().string();
+    const std::string filename = path.filename().string();
 
     // Regex breakdown:
     // ^        : Start of string
@@ -429,4 +423,66 @@ int AppModel::queuedAndPendingJobs()
 bool AppModel::showHasLocalFile(std::string showName, std::string seasonKey)
 {
     return _mLocalEpisodes.contains(std::format("{} {}", showName, seasonKey));
+}
+
+std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(std::string titleId)
+{
+    std::vector<std::string> ret;
+    for (auto& title : _mTitles) {
+        if (std::format("{}", title.id) == titleId) {
+            if (!title.path().string().ends_with(".d")) {
+
+                ret.push_back(std::format(
+                    "mv \"{}\" \"{}.d\"",
+                    title.path().string(),
+                    title.path().string()
+                ));
+                ret.push_back("sleep 1");
+            }
+        }
+    }
+
+    // And update the UI.
+    if (!ret.empty()) {
+        ret.push_back("_scanLocalTitles");
+        ret.push_back("_reflowAll");
+    }
+
+    return ret;
+}
+
+
+
+std::vector<std::string> AppModel::getCommandsToUnDeleteFileForTitle(std::string titleId)
+{
+    std::vector<std::string> ret;
+    for (auto& title : _mTitles) {
+        if (std::format("{}", title.id) == titleId) {
+            if (title.path().string().ends_with(".d")) {
+
+                ret.push_back(std::format(
+                    "mv \"{}\" \"{}\"",
+                    title.path().string(),
+                    title.path().string().substr(title.path().string().length() - 2)
+                ));
+            }
+        }
+    }
+
+    // And update the UI.
+    if (!ret.empty()) {
+        ret.push_back("_scanLocalTitles");
+        ret.push_back("_reflowAll");
+    }
+
+    return ret;
+}
+
+int AppModel::requestedPosition() {
+    return _mRequestedPosition;
+}
+
+void AppModel::setRequestedPosition(int position)
+{
+    _mRequestedPosition = position;
 }
