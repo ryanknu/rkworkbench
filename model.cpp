@@ -31,7 +31,7 @@ AppModel::AppModel()
 	_createDirectories();
 	_readApiKey();
 	scanLocalTmdbData();
-	_scanLocalTitles();
+	scanLocalTitles();
 }
 
 fs::path AppModel::configDirPath()
@@ -77,11 +77,16 @@ fs::path AppModel::filmDirectory()
     return _mConfigDirPath / "films";
 }
 
+fs::path AppModel::outputDirectory()
+{
+    return _mWorkingDirPath / "output";
+}
+
 void AppModel::_createDirectories()
 {
    	fs::create_directories(tvDirectory());
 	fs::create_directories(filmDirectory());
-	fs::create_directories(_mWorkingDirPath / "output");
+	fs::create_directories(outputDirectory());
 }
 
 void AppModel::_readApiKey()
@@ -171,6 +176,8 @@ void AppModel::scanLocalTmdbData()
 
             Show* show = new Show(
                 parsed.id,
+                // WARNING: Show title is used for remote naming convention. Do not change it without changing
+                //          all pathing operations.
                 std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id)
             );
 
@@ -211,8 +218,23 @@ void AppModel::scanLocalTmdbData()
 /**
  * Scans the local filesystem for titles.
  */
-void AppModel::_scanLocalTitles()
+void AppModel::scanLocalTitles()
 {
+    _mTitles = { };
+    _mLocalEpisodes = { };
+
+    for (const auto& entry : fs::directory_iterator(outputDirectory())) {
+        if (!entry.is_directory()) {
+            continue;
+        }
+
+        auto showName = entry.path().filename().string();
+        for (const auto& entry : fs::directory_iterator(entry.path())) {
+            auto seasonKey = entry.path().filename().string().substr(0, 6);
+            _mLocalEpisodes[std::format("{} {}", showName, seasonKey)] = entry.path();
+        }
+    }
+
     for (const auto& entry : fs::directory_iterator(_mWorkingDirPath)) {
         if (!entry.is_directory()) {
             continue;
@@ -353,10 +375,11 @@ void AppModel::popTask()
 
 /**
  * Creates all jobs from the current UI state.
+ * *DOES NOT* append them to _mTasks, that is the UI's job.
  */
-void AppModel::enqueueAllJobs()
+std::vector<std::string> AppModel::generateJobsFromState()
 {
-    auto countTasks = _mTasks.size();
+    std::vector<std::string> jobs;
     for (const auto& pair : _mIdentifiedEpisodes) {
         auto diskId = pair.first;
         auto episodeId = pair.second;
@@ -367,14 +390,16 @@ void AppModel::enqueueAllJobs()
                         auto showId = episode.showId;
                         for (auto& show : _mShows) {
                             if (show.id == showId) {
-                                auto outDir = std::format("output/{}", show.title);
+                                auto outDir = outputDirectory() / show.title;
 
-                                // TODO: If outdir exists, don't mkdir it
-                                auto cmd = std::format("mkdir -p \"{}\"", outDir);
-                                _mTasks.push_back(cmd);
+                                if (!fs::exists(outDir)) {
+                                    auto cmd = std::format("mkdir -p \"{}\"", outDir.string());
+                                    jobs.push_back(cmd);
+                                }
 
-                                auto cmd2 = std::format("mv \"{}\" \"{}/{}.mkv\"", title.path().string(), outDir, episode.seasonKey());
-                                _mTasks.push_back(cmd2);
+                                auto savePath = outDir / std::format("{}.mkv", episode.seasonKey());
+                                auto cmd2 = std::format("mv \"{}\" \"{}\"", title.path().string(), savePath.string());
+                                jobs.push_back(cmd2);
                                 goto broke;
                             }
                         }
@@ -385,9 +410,10 @@ void AppModel::enqueueAllJobs()
         broke:
         qDebug() << "test";
     }
-    if (_mTasks.size() > countTasks) {
-        _mTasks.push_back("_reflowAll");
+    if (jobs.size() > 0) {
+        jobs.push_back("_scanLocalTitles");
     }
+    return jobs;
 }
 
 fs::path RippedTitle::path()
@@ -398,4 +424,9 @@ fs::path RippedTitle::path()
 int AppModel::queuedAndPendingJobs()
 {
     return _mQueuedAndPendingJobs;
+}
+
+bool AppModel::showHasLocalFile(std::string showName, std::string seasonKey)
+{
+    return _mLocalEpisodes.contains(std::format("{} {}", showName, seasonKey));
 }

@@ -25,6 +25,7 @@ signals:
     void commandCompleted();
     void reflowAll();
     void scanFilesystemForShow(int showId);
+    void scanLocalTitles();
 
 private:
     std::queue<std::string> commandQueue;

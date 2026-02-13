@@ -4,7 +4,8 @@
 #include <QStringListModel>
 #include <QPushButton>
 #include <QTreeView>
-#include "phonon/mediasource.h"
+#include <QAction>
+#include <QMediaPlayer>
 #include "model.h"
 #include "commandworker.h"
 
@@ -25,10 +26,10 @@ public:
 
 private:
 	Ui::MainWindow *ui;
-	Phonon::MediaSource *video;
 	std::filesystem::path configPath;
 	AppModel *appModel;
 	CommandWorker *worker;
+	QMediaPlayer *player;
 
 	void _reflowTrees();
 	void _reflowTaskList();

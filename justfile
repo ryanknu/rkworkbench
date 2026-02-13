@@ -1,6 +1,6 @@
 OPTIONS := "-fPIC -std=c++20 -fuse-ld=mold"
 DBG_OPTS := f'{{OPTIONS}} -g -fsanitize=address -pthread'
-DEPS := "Qt6Core Qt6Widgets phonon4qt6 nlohmann_json"
+DEPS := "Qt6Core Qt6Widgets Qt6Multimedia Qt6MultimediaWidgets nlohmann_json"
 CFLAGS := shell(f'pkg-config --cflags {{DEPS}}')
 LIBS := shell(f'pkg-config --libs {{DEPS}}')
 

@@ -34,6 +34,8 @@ void CommandWorker::processQueue()
 
         if (cmd == "_reflowAll") {
             emit reflowAll();
+        } else if (cmd == "_scanLocalTitles") {
+            emit scanLocalTitles();
         } else if (cmd.starts_with("_scanFsForShow ")) {
             int showId = std::stoi(cmd.substr(15));
             emit scanFilesystemForShow(showId);

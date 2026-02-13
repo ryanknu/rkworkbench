@@ -32,14 +32,17 @@ class AppModel {
         void setPreprocessorCommand(std::string cmd);
         void identifyEpisode(std::string titleId, std::string showId);
         bool isIdentified(std::string item);
-        void enqueueAllJobs();
+        std::vector<std::string> generateJobsFromState();
         int queuedAndPendingJobs();
         void scanLocalTmdbData();
+        void scanLocalTitles();
+        bool showHasLocalFile(std::string showName, std::string seasonKey);
 
         // I need to expose these because the UI generates cURL commands...
         // Maybe a better pattern is to have appModel generate them.
         std::filesystem::path tvDirectory();
         std::filesystem::path filmDirectory();
+        std::filesystem::path outputDirectory();
 
     private:
         // Media data
@@ -47,6 +50,7 @@ class AppModel {
         std::vector<Show> _mShows;
         std::vector<Episode> _mEpisodes;
         std::vector<RippedTitle> _mTitles;
+        std::unordered_map<std::string, std::filesystem::path> _mLocalEpisodes;
         std::unordered_map<std::string, std::string> _mIdentifiedEpisodes;
 
         // Configurations
@@ -66,7 +70,6 @@ class AppModel {
         RippedTitle* _newRippedTitle(std::filesystem::path path, std::uintmax_t size, std::string diskName, std::string titleName);
         void _readApiKey();
         void _writeApiKey();
-        void _scanLocalTitles();
 };
 
 class RippedTitle
