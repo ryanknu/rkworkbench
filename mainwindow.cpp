@@ -9,6 +9,9 @@
 #include <string>
 #include <format>
 #include <unordered_map>
+#include <algorithm>
+#include <memory>
+#include <string>
 
 namespace fs = std::filesystem;
 
@@ -31,51 +34,73 @@ void MainWindow::_reflowTrees() const {
     disksModel->removeRows(0, disksModel->rowCount());
 
     // Populate show listing
-    for (const auto& show : *appModel->shows()) {
-        const auto showId = show.id;
-        auto showName = show.title;
-        const auto showItem = new QStandardItem(q(showName));
+    std::unordered_map<std::string, QStandardItem*> showItems;
 
-        showsModel->invisibleRootItem()
-            ->appendRow(showItem);
+    // Buffer for episodes for sorting
+    auto episodes = appModel->episodes();
+    std::ranges::sort(episodes,
+        [](Episode* a, Episode* b) {
+            return *a < *b;
+        }
+    );
 
-        for (auto& episode : *appModel->episodes()) {
-            if (showId == episode.showId) {
-                auto episodeItem = new QStandardItem(q(episode.friendlyTitle()));
-                if (appModel->showHasLocalFile(showName, episode.seasonKey())) {
-                    episodeItem->setForeground(QBrush(QColor("green")));
-                }
-                else if (appModel->isIdentified(std::format("{}", episode.id))) {
-                    episodeItem->setForeground(QBrush(QColor("orange")));
-                }
-                episodeItem->setData(q(std::format("{}", episode.id)), Qt::UserRole);
-                showItem->appendRow(episodeItem);
-            }
+    for (auto& episode : episodes) {
+        if (!appModel->hasShow(episode->showId)) continue;
+        auto show = appModel->showById(episode->showId);
+
+        auto episodeItem = new QStandardItem(q(episode->friendlyTitle()));
+        episodeItem->setData(q(episode->id), Qt::UserRole);
+        if (appModel->showHasLocalFile(show.title, episode->seasonKey())) {
+            episodeItem->setForeground(QBrush(QColor("green")));
+        }
+        else if (appModel->isIdentified(std::format("{}", episode->id))) {
+            episodeItem->setForeground(QBrush(QColor("orange")));
+        }
+
+        if (!showItems.contains(show.id)) {
+            auto showItem = new QStandardItem(q(show.title));
+            showItem->setSelectable(false);
+            showsModel->invisibleRootItem()
+                ->appendRow(showItem);
+
+            showItem->appendRow(episodeItem);
+            showItems.emplace(show.id, showItem);
+        } else {
+            auto showItem = showItems.at(show.id);
+            showItem->appendRow(episodeItem);
         }
     }
 
     // Populate disk listing
     std::unordered_map<std::string, QStandardItem*> disks;
-    for (auto& title : *appModel->titles()) {
-        auto titleItem = new QStandardItem(q(title.friendlyTitle()));
-        titleItem->setData(q(std::format("{}", title.id)), Qt::UserRole);
-        if (title.path().string().ends_with(".d")) {
+
+    auto titles = appModel->titles();
+    std::ranges::sort(titles,
+        [](RippedTitle* a, RippedTitle* b) {
+            return *a < *b;
+        }
+    );
+
+    for (auto& title : titles) {
+        auto titleItem = new QStandardItem(q(title->friendlyTitle()));
+        titleItem->setData(q(title->id), Qt::UserRole);
+        if (title->isDeleted()) {
             titleItem->setForeground(QBrush(QColor("red")));
         }
-        else if (appModel->isIdentified(std::format("{}", title.id))) {
+        else if (appModel->isIdentified(title->id)) {
             titleItem->setForeground(QBrush(QColor("orange")));
         }
 
-        if (!disks.contains(title.diskName())) {
-            auto diskItem = new QStandardItem(q(title.diskName()));
+        if (!disks.contains(title->diskName())) {
+            auto diskItem = new QStandardItem(q(title->diskName()));
             diskItem->setSelectable(false);
             disksModel->invisibleRootItem()
                 ->appendRow(diskItem);
 
             diskItem->appendRow(titleItem);
-            disks[title.diskName()] = diskItem;
+            disks[title->diskName()] = diskItem;
         } else {
-            auto diskItem = disks[title.diskName()];
+            auto diskItem = disks[title->diskName()];
             diskItem->appendRow(titleItem);
         }
     }
@@ -177,18 +202,18 @@ void MainWindow::setAppModel(AppModel *theModel) {
     // When selecting an entry on the disks tree, load item in player.
     connect(ui->disksTree->selectionModel(), &QItemSelectionModel::selectionChanged, [&](const QItemSelection &, const QItemSelection &) {
         auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-        for (auto& title : *appModel->titles()) {
-            if (std::format("{}", title.id) == titleId) {
-                if (_getRequestedPosition() != 0) {
-                    appModel->setRequestedPosition(_getRequestedPosition());
-                }
 
-                player->setSource(QUrl::fromLocalFile(q(title.path().string())));
-                player->play();
-                player->pause();
-            }
+        if (!appModel->hasTitle(titleId)) return;
+        auto title = appModel->titleById(titleId);
+
+        if (_getRequestedPosition() != 0) {
+            appModel->setRequestedPosition(_getRequestedPosition());
         }
-    });
+
+        player->setSource(QUrl::fromLocalFile(q(title.path().string())));
+        player->play();
+        player->pause();
+});
 }
 
 MainWindow::MainWindow(QWidget *parent)
@@ -288,23 +313,12 @@ MainWindow::MainWindow(QWidget *parent)
 
         connect(uploadAction, &QAction::triggered, [&]() {
             auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
-            for (auto& episode : *appModel->episodes()) {
-                if (std::format("{}", episode.id) != episodeId) continue;
-                auto showId = episode.showId;
-                for (auto& show : *appModel->shows()) {
-                    if (show.id != showId) continue;
-                    bool isTv = ui->tmdbModeBtn->text() == "TV";
-                    auto embyDir = isTv ? "tv" : "movies";
-                    auto showDir = appModel->outputDirectory() / show.title;
-                    auto cmd = std::format(
-                        "rsync -a \"{}/\" \"root@10.4.6.2:/mnt/user/emby/{}/{}/\"",
-                        showDir.string(),
-                        embyDir,
-                        show.title
-                    );
-                    _queueTask(cmd);
-                }
-            }
+            if (!appModel->hasEpisode(episodeId)) return;
+            auto episode = appModel->episodeById(episodeId);
+
+            _queueTasks(
+                appModel->getCommandsToUploadEntireShow(episode.showId)
+            );
         });
 
         menu.exec(ui->showsTree->viewport()->mapToGlobal(pos));
@@ -393,24 +407,23 @@ MainWindow::MainWindow(QWidget *parent)
             return;
         }
 
-        for (auto& show : *appModel->shows()) {
-            if (show.id == showId) {
-                for (auto seasonNr : show.seasons) {
-                    auto cmd = std::format(
-                        "curl https://api.themoviedb.org/3/tv/{}/season/{}.json --header \"Authorization: bearer {}\" -o {}/{}-S{:02}.json",
-                        showId,
-                        seasonNr,
-                        ui->tmdbApiKey->text().toStdString(), // It would be nice to save this when the user starts fetching so they can't mess it up.
-                        appModel->tvDirectory().string(),
-                        showId,
-                        seasonNr
-                    );
+        auto id = std::to_string(showId);
+        if (!appModel->hasShow(id)) return;
+        auto show = appModel->showById(id);
 
-                    _queueTask(cmd);
-                    _queueTask("_scanFsForShow 0"); // TODO: make scanFsForAll or something
-                }
-                break;
-            }
+        for (auto seasonNr : show.seasons) {
+            auto cmd = std::format(
+                "curl https://api.themoviedb.org/3/tv/{}/season/{}.json --header \"Authorization: bearer {}\" -o {}/{}-S{:02}.json",
+                showId,
+                seasonNr,
+                ui->tmdbApiKey->text().toStdString(), // It would be nice to save this when the user starts fetching so they can't mess it up.
+                appModel->tvDirectory().string(),
+                showId,
+                seasonNr
+            );
+
+            _queueTask(cmd);
+            _queueTask("_scanFsForShow 0"); // TODO: make scanFsForAll or something
         }
     });
 }

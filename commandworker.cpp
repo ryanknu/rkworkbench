@@ -1,4 +1,7 @@
 #include "commandworker.h"
+#include <filesystem>
+
+namespace fs = std::filesystem;
 
 CommandWorker::CommandWorker()
 {
@@ -39,6 +42,11 @@ void CommandWorker::processQueue()
         } else if (cmd.starts_with("_scanFsForShow ")) {
             int showId = std::stoi(cmd.substr(15));
             emit scanFilesystemForShow(showId);
+        } else if (cmd.starts_with("_mkDir ")) {
+            fs::path path(cmd.substr(7));
+            if (!fs::exists(path)) {
+                fs::create_directories(path);
+            }
         } else {
             QStringList parts = QProcess::splitCommand(QString::fromStdString(cmd));
 

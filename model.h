@@ -15,91 +15,99 @@ enum TmdbMode {
 };
 
 class AppModel {
-    public:
-        AppModel();
-        std::filesystem::path configDirPath();
-        std::filesystem::path workingDirPath();
-        std::string tmdbMode() const;
-        std::string tmdbApiKey();
-        void setTmdbApiKey(std::string apiKey);
-        void toggleTmdbMode();
-        std::vector<std::string> *tasks();
-        void pushTask(std::string task);
-        void popTask();
-        std::vector<Show> *shows();
-        std::vector<Episode> *episodes();
-        std::vector<RippedTitle> *titles();
-        void setPreprocessorCommand(std::string cmd);
-        void identifyEpisode(std::string titleId, std::string showId);
-        bool isIdentified(std::string item);
-        std::vector<std::string> generateJobsFromState();
-        int queuedAndPendingJobs();
-        void scanLocalTmdbData();
-        void scanLocalTitles();
-        bool showHasLocalFile(std::string showName, std::string seasonKey);
-        std::vector<std::string> getCommandsToDeleteFileForTitle(std::string titleId);
-        std::vector<std::string> getCommandsToUnDeleteFileForTitle(std::string titleId);
-        int requestedPosition();
-        void setRequestedPosition(int position);
+public:
+    AppModel();
+    std::filesystem::path configDirPath();
+    std::filesystem::path workingDirPath();
+    std::string tmdbMode() const;
+    std::string tmdbApiKey();
+    void setTmdbApiKey(std::string apiKey);
+    void toggleTmdbMode();
+    std::vector<std::string> *tasks();
+    void pushTask(std::string task);
+    void popTask();
+    std::vector<Show*> shows(); // Probably not needed, use showById instead. It also shouldn't know how
+    // show and episode are linked, we should do episodesByShow(Show) and showByEpisode(Episode).
+    std::vector<Episode*> episodes(); // These are likely to be immediately sorted, so, letting the caller
+    // own the reference is ideal.
+    std::vector<RippedTitle*> titles();
+    bool hasShow(const std::string& id);
+    bool hasEpisode(const std::string& id);
+    bool hasTitle(const std::string& id);
+    Show& showById(const std::string& id);
+    Episode& episodeById(const std::string& id);
+    RippedTitle& titleById(const std::string& id);
+    void setPreprocessorCommand(std::string cmd);
+    void identifyEpisode(const std::string& titleId, std::string showId);
+    bool isIdentified(const std::string& item) const;
+    std::vector<std::string> generateJobsFromState();
+    int queuedAndPendingJobs();
+    void scanLocalTmdbData();
+    void scanLocalTitles();
+    bool showHasLocalFile(std::string showName, std::string seasonKey);
+    std::vector<std::string> getCommandsToDeleteFileForTitle(const std::string& titleId);
+    std::vector<std::string> getCommandsToUnDeleteFileForTitle(const std::string& titleId);
+    std::vector<std::string> getCommandsToUploadEntireShow(const std::string& showId);
+    int requestedPosition();
+    void setRequestedPosition(int position);
 
-        // I need to expose these because the UI generates cURL commands...
-        // Maybe a better pattern is to have appModel generate them.
-        std::filesystem::path tvDirectory() const;
-        std::filesystem::path filmDirectory() const;
-        std::filesystem::path outputDirectory() const;
+    // I need to expose these because the UI generates cURL commands...
+    // Maybe a better pattern is to have appModel generate them.
+    std::filesystem::path tvDirectory() const;
+    std::filesystem::path filmDirectory() const;
+    std::filesystem::path outputDirectory() const;
 
-    private:
-        // Media data
-        TmdbMode _mTmdbMode;
-        std::vector<Show> _mShows;
-        std::vector<Episode> _mEpisodes;
-        std::vector<RippedTitle> _mTitles;
-        std::unordered_map<std::string, std::filesystem::path> _mLocalEpisodes;
-        std::unordered_map<std::string, std::string> _mIdentifiedEpisodes;
+private:
+    // Media data
+    TmdbMode _mTmdbMode;
+    std::unordered_map<std::string, std::unique_ptr<Show>> _mShows;
+    std::unordered_map<std::string, std::unique_ptr<Episode>> _mEpisodes;
+    std::unordered_map<std::string, std::unique_ptr<RippedTitle>> _mTitles;
+    std::unordered_map<std::string, std::filesystem::path> _mLocalEpisodes;
+    std::unordered_map<std::string, std::string> _mIdentifiedEpisodes;
 
-        // Configurations
-        std::filesystem::path _mConfigDirPath;
-        std::filesystem::path _mWorkingDirPath;
-        std::string _mTmdbApiKey;
-        std::string _mPreprocessorCommand;
+    // Configurations
+    std::filesystem::path _mConfigDirPath;
+    std::filesystem::path _mWorkingDirPath;
+    std::string _mTmdbApiKey;
+    std::string _mPreprocessorCommand;
 
-        // Task worker
-        std::vector<std::string> _mTasks;
-        int _mQueuedAndPendingJobs = 0;
+    // Task worker
+    std::vector<std::string> _mTasks;
+    int _mQueuedAndPendingJobs = 0;
 
-        // Sequences
-        std::atomic<std::uint64_t> _mIdSequence{1};
+    // Media player
+    int _mRequestedPosition = 0;
 
-        // Media player
-        int _mRequestedPosition = 0;
-
-        void _createDirectories() const;
-        RippedTitle* _newRippedTitle(std::filesystem::path path, std::uintmax_t size, std::string diskName, std::string titleName);
-        void _readApiKey();
-        void _writeApiKey() const;
+    void _createDirectories() const;
+    void _readApiKey();
+    void _writeApiKey() const;
 };
 
 class RippedTitle
 {
-    public:
-        RippedTitle(std::uint64_t _id, std::filesystem::path path, std::uintmax_t size, std::string diskName, std::string titleName);
-        std::uint64_t id;
-        std::string diskName();
-        std::string friendlyTitle();
-        std::filesystem::path path();
+public:
+    RippedTitle(std::filesystem::path path, std::uintmax_t size, std::string diskName, std::string titleName);
+    std::string id;
+    std::string diskName();
+    std::string friendlyTitle();
+    std::filesystem::path path();
+    bool isDeleted();
+    bool operator<(const RippedTitle& other) const;
 
-    private:
-        std::filesystem::path _mPath;
-        std::uintmax_t _mSize;
-        std::string _mDiskName;
-        std::string _mTitleName;
+private:
+    std::filesystem::path _mPath;
+    std::uintmax_t _mSize;
+    std::string _mDiskName;
+    std::string _mTitleName;
+    static std::atomic<std::uint64_t> _mIdSequence;
 };
 
 class Show
 {
     public:
-        Show(int _id, std::string title);
-        int id;
+        Show(std::string _id, std::string title);
+        std::string id;
         std::vector<int> seasons;
         std::string title;
 
@@ -109,22 +117,17 @@ class Show
 class Episode
 {
     public:
-        Episode(int _id, int _season, int _number, int _showId, std::string _title);
-        int id;
+        Episode(std::string _id, int _season, int _number, std::string _showId, std::string _title);
+        std::string id;
         int season;
         int number;
-        int showId;
+        std::string showId;
 
         std::string title;
         std::string seasonKey();
         std::string friendlyTitle();
+        bool operator<(const Episode& other) const;
         // int duration
+        // video enc
+        // resolution
 };
-
-    // class Entry {
-    //     private:
-    //         std::string id;
-    //         Entry* _mParentEntry;
-    //         std::string text;
-    //         std::filesystem::path file;
-    // };

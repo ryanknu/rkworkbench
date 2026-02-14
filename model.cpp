@@ -10,14 +10,12 @@
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
+std::atomic<std::uint64_t> RippedTitle::_mIdSequence = {1};
+
 AppModel::AppModel()
 {
     // Defaults
-    _mTasks = { };
-    _mShows = { };
-    _mTitles = { };
-    _mEpisodes = { };
-    _mTmdbMode = TmdbMode::TV;
+    _mTmdbMode = TV;
     _mPreprocessorCommand = "";
     _mTmdbApiKey = "";
 
@@ -140,8 +138,8 @@ bool detectSeasonJson(const fs::path& path) {
  */
 void AppModel::scanLocalTmdbData()
 {
-    _mShows = { };
-    _mEpisodes = { };
+    _mShows.clear();
+    _mEpisodes.clear();
 
     struct TvShowData {
         int id;
@@ -168,18 +166,16 @@ void AppModel::scanLocalTmdbData()
                 jf["name"].get<std::string>()
             };
 
-            Show* show = new Show(
-                parsed.id,
-                // WARNING: Show title is used for remote naming convention. Do not change it without changing
-                //          all pathing operations.
-                std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id)
-            );
+            // WARNING: Show title is used for remote naming convention. Do not change it without changing
+            //          all pathing operations.
+            auto title = std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id);
+            auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), title);
 
-            for (auto& sejson : jf["seasons"]) {
-                show->pushSeason(sejson["season_number"].get<int>());
+            for (auto& season : jf["seasons"]) {
+                show->pushSeason(season["season_number"].get<int>());
             }
 
-            _mShows.push_back(*show);
+            _mShows.emplace(show->id, std::move(show));
         }
 
         if (detectSeasonJson(entry.path())) {
@@ -195,15 +191,15 @@ void AppModel::scanLocalTmdbData()
                     epjson["name"].get<std::string>()
                 };
 
-                Episode* episode = new Episode(
-                    parsed.id,
+                auto episode = std::make_unique<Episode>(
+                    std::format("ep.{}", parsed.id),
                     parsed.season_number,
                     parsed.episode_number,
-                    parsed.show_id,
+                    std::format("show.{}", parsed.show_id),
                     parsed.name
                 );
 
-                _mEpisodes.push_back(*episode);
+                _mEpisodes.emplace(episode->id, std::move(episode));
             }
         }
     }
@@ -214,8 +210,8 @@ void AppModel::scanLocalTmdbData()
  */
 void AppModel::scanLocalTitles()
 {
-    _mTitles = { };
-    _mLocalEpisodes = { };
+    _mTitles.clear();
+    _mLocalEpisodes.clear();
 
     for (const auto& entry : fs::directory_iterator(outputDirectory())) {
         if (!entry.is_directory()) {
@@ -244,23 +240,23 @@ void AppModel::scanLocalTitles()
         for (const auto& entry : fs::directory_iterator(entry.path())) {
             std::uintmax_t size = fs::file_size(entry.path());
 
-            auto title = _newRippedTitle(
+            auto title = std::make_unique<RippedTitle>(
                 entry.path(),
                 size,
                 diskName,
                 entry.path().filename().string()
             );
 
-            _mTitles.push_back(*title);
+            _mTitles.emplace(title->id, std::move(title));
         }
     }
 }
 
-Show::Show(int _id, std::string _title)
+Show::Show(std::string _id, std::string _title)
 {
-    id = _id;
+    id = std::move(_id);
     seasons = { };
-    title = _title;
+    title = std::move(_title);
 }
 
 void Show::pushSeason(int season)
@@ -268,13 +264,13 @@ void Show::pushSeason(int season)
     seasons.push_back(season);
 }
 
-Episode::Episode(int _id, int _season, int _number, int _showId, std::string _title)
+Episode::Episode(std::string _id, int _season, int _number, std::string _showId, std::string _title)
 {
-    id = _id;
+    id = std::move(_id);
     season = _season;
     number = _number;
-    showId = _showId;
-    title = _title;
+    showId = std::move(_showId);
+    title = std::move(_title);
 }
 
 std::vector<std::string> *AppModel::tasks()
@@ -282,19 +278,31 @@ std::vector<std::string> *AppModel::tasks()
     return &_mTasks;
 }
 
-std::vector<Show> *AppModel::shows()
+std::vector<Show*> AppModel::shows()
 {
-    return &_mShows;
+    std::vector<Show*> ret;
+    for (const auto &val: _mShows | std::views::values) {
+        ret.push_back(val.get());
+    }
+    return ret;
 }
 
-std::vector<Episode> *AppModel::episodes()
+std::vector<Episode*> AppModel::episodes()
 {
-    return &_mEpisodes;
+    std::vector<Episode*> ret;
+    for (const auto &val: _mEpisodes | std::views::values) {
+        ret.push_back(val.get());
+    }
+    return ret;
 }
 
-std::vector<RippedTitle> *AppModel::titles()
+std::vector<RippedTitle*> AppModel::titles()
 {
-    return &_mTitles;
+    std::vector<RippedTitle*> ret;
+    for (const auto &val: _mTitles | std::views::values) {
+        ret.push_back(val.get());
+    }
+    return ret;
 }
 
 std::string Episode::seasonKey()
@@ -307,39 +315,47 @@ std::string Episode::friendlyTitle()
     return std::format("{} - {}", seasonKey(), title);
 }
 
+bool Episode::operator<(const Episode& other) const {
+    // TODO: Sort by show name first.
+    if (other.season == season) {
+        if (other.number == number) {
+            return std::strcoll(other.title.c_str(), title.c_str()) < 0;
+        }
+        return number < other.number;
+    }
+    return season < other.season;
+}
+
+bool RippedTitle::operator<(const RippedTitle& other) const {
+    if (_mDiskName == other._mDiskName) {
+        return std::strcoll(_mTitleName.c_str(), other._mTitleName.c_str()) < 0;
+    }
+    return std::strcoll(_mDiskName.c_str(), other._mDiskName.c_str()) < 0;
+}
+
 void AppModel::setPreprocessorCommand(std::string cmd)
 {
-    _mPreprocessorCommand = cmd;
+    _mPreprocessorCommand = std::move(cmd);
 }
 
-void AppModel::identifyEpisode(std::string titleId, std::string showId)
+void AppModel::identifyEpisode(const std::string& titleId, std::string showId)
 {
-    _mIdentifiedEpisodes[titleId] = showId;
+    _mIdentifiedEpisodes[titleId] = std::move(showId);
 }
 
-bool AppModel::isIdentified(std::string item)
-{
-    // either a key or a value in _mIdentifiedEpisodes
-    for (const auto& pair : _mIdentifiedEpisodes) {
-        if (pair.first == item || pair.second == item) {
-            return true;
-        }
-    }
-    return false;
+bool AppModel::isIdentified(const std::string& item) const {
+    return std::ranges::any_of(_mIdentifiedEpisodes, [&](const auto& pair) {
+        return pair.first == item || pair.second == item;
+    });
 }
 
-RippedTitle* AppModel::_newRippedTitle(fs::path path, std::uintmax_t size, std::string diskName, std::string titleName)
+RippedTitle::RippedTitle(fs::path path, std::uintmax_t size, std::string diskName, std::string titleName)
 {
-    return new RippedTitle(_mIdSequence.fetch_add(1), path, size, diskName, titleName);
-}
-
-RippedTitle::RippedTitle(std::uint64_t _id, fs::path path, std::uintmax_t size, std::string diskName, std::string titleName)
-{
-    id = _id;
-    _mPath = path;
+    id = std::format("title.{}", _mIdSequence.fetch_add(1));
+    _mPath = std::move(path);
     _mSize = size;
-    _mDiskName = diskName;
-    _mTitleName = titleName;
+    _mDiskName = std::move(diskName);
+    _mTitleName = std::move(titleName);
 }
 
 std::string RippedTitle::diskName()
@@ -375,38 +391,35 @@ std::vector<std::string> AppModel::generateJobsFromState()
 {
     std::vector<std::string> jobs;
     for (const auto& pair : _mIdentifiedEpisodes) {
-        auto diskId = pair.first;
+        auto titleId = pair.first;
         auto episodeId = pair.second;
-        for (auto& title : _mTitles) {
-            if (std::format("{}", title.id) == diskId) {
-                for (auto& episode : _mEpisodes) {
-                    if (std::format("{}", episode.id) == episodeId) {
-                        auto showId = episode.showId;
-                        for (auto& show : _mShows) {
-                            if (show.id == showId) {
-                                auto outDir = outputDirectory() / show.title;
 
-                                if (!fs::exists(outDir)) {
-                                    auto cmd = std::format("mkdir -p \"{}\"", outDir.string());
-                                    jobs.push_back(cmd);
-                                }
+        if (!hasTitle(titleId) || !hasEpisode(episodeId)) continue;
 
-                                auto savePath = outDir / std::format("{}.mkv", episode.seasonKey());
-                                auto cmd2 = std::format("mv \"{}\" \"{}\"", title.path().string(), savePath.string());
-                                jobs.push_back(cmd2);
-                                goto broke;
-                            }
-                        }
-                    }
-                }
-            }
+        auto title = titleById(titleId);
+        auto episode = episodeById(episodeId);
+
+        if (!hasShow(episode.showId)) continue;
+
+        auto show = showById(episode.showId);
+
+        // RK: I don't like this being located here. The show's directory should be something like Show::outDir()
+        auto outDir = outputDirectory() / show.title;
+
+        if (!fs::exists(outDir)) {
+            auto cmd = std::format("_mkDir {}", outDir.string());
+            jobs.push_back(cmd);
         }
-        broke:
-        qDebug() << "test";
+
+        auto savePath = outDir / std::format("{}.mkv", episode.seasonKey());
+        auto cmd2 = std::format("mv \"{}\" \"{}\"", title.path().string(), savePath.string());
+        jobs.push_back(cmd2);
     }
+
     if (jobs.size() > 0) {
         jobs.push_back("_scanLocalTitles");
     }
+
     return jobs;
 }
 
@@ -425,56 +438,74 @@ bool AppModel::showHasLocalFile(std::string showName, std::string seasonKey)
     return _mLocalEpisodes.contains(std::format("{} {}", showName, seasonKey));
 }
 
-std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(std::string titleId)
+std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(const std::string& titleId)
 {
-    std::vector<std::string> ret;
-    for (auto& title : _mTitles) {
-        if (std::format("{}", title.id) == titleId) {
-            if (!title.path().string().ends_with(".d")) {
-
-                ret.push_back(std::format(
-                    "mv \"{}\" \"{}.d\"",
-                    title.path().string(),
-                    title.path().string()
-                ));
-            }
-        }
+    if (!hasTitle(titleId)) {
+        return { };
     }
 
-    // And update the UI.
-    if (!ret.empty()) {
-        ret.push_back("_scanLocalTitles");
-        ret.push_back("_reflowAll");
+    auto title = titleById(titleId);
+    if (!title.isDeleted()) {
+        return { };
     }
 
-    return ret;
+    auto cmd = std::format(
+    "mv \"{}\" \"{}.d\"",
+        title.path().string(),
+        title.path().string()
+    );
+
+    return {
+        cmd,
+        // And update the UI
+        "_scanLocalTitles",
+        "_reflowAll"
+    };
 }
 
-
-
-std::vector<std::string> AppModel::getCommandsToUnDeleteFileForTitle(std::string titleId)
+std::vector<std::string> AppModel::getCommandsToUnDeleteFileForTitle(const std::string& titleId)
 {
-    std::vector<std::string> ret;
-    for (auto& title : _mTitles) {
-        if (std::format("{}", title.id) == titleId) {
-            if (title.path().string().ends_with(".d")) {
-
-                ret.push_back(std::format(
-                    "mv \"{}\" \"{}\"",
-                    title.path().string(),
-                    title.path().string().substr(0, title.path().string().length() - 2)
-                ));
-            }
-        }
+    if (!hasTitle(titleId)) {
+        return { };
     }
 
-    // And update the UI.
-    if (!ret.empty()) {
-        ret.push_back("_scanLocalTitles");
-        ret.push_back("_reflowAll");
+    auto title = titleById(titleId);
+    if (!title.isDeleted()) {
+        return { };
     }
 
-    return ret;
+    auto cmd = std::format(
+        "mv \"{}\" \"{}\"",
+        title.path().string(),
+        title.path().string().substr(0, title.path().string().length() - 2)
+    );
+
+    return {
+        cmd,
+        // And update the UI
+        "_scanLocalTitles",
+        "_reflowAll"
+    };
+}
+
+std::vector<std::string> AppModel::getCommandsToUploadEntireShow(const std::string& showId)
+{
+    if (!hasShow(showId)) {
+        return { };
+    }
+
+    auto show = showById(showId);
+    const auto showDir = outputDirectory() / show.title;
+
+    auto cmd = std::format(
+        "rsync -a \"{}/\" \"root@10.4.6.2:/mnt/user/emby/tv/{}/\"",
+        showDir.string(),
+        show.title
+    );
+
+    return {
+        cmd
+    };
 }
 
 int AppModel::requestedPosition() {
@@ -485,3 +516,33 @@ void AppModel::setRequestedPosition(int position)
 {
     _mRequestedPosition = position;
 }
+
+bool RippedTitle::isDeleted() {
+    return _mPath.string().ends_with(".d");
+}
+
+Show& AppModel::showById(const std::string& id) {
+    return *_mShows.at(id);
+}
+
+Episode& AppModel::episodeById(const std::string& id) {
+    return *_mEpisodes.at(id);
+}
+
+RippedTitle& AppModel::titleById(const std::string& id) {
+    return *_mTitles.at(id);
+}
+
+bool AppModel::hasShow(const std::string& id) {
+    return _mShows.contains(id);
+}
+
+bool AppModel::hasEpisode(const std::string& id) {
+    return _mEpisodes.contains(id);
+}
+
+bool AppModel::hasTitle(const std::string& id) {
+    return _mTitles.contains(id);
+}
+
+

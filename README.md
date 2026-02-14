@@ -2,6 +2,18 @@
 
 A simple tool to manage an ingest process.
 
+## Building & Running
+
+To build, ensure you've installed dependencies in (justfile)[justfile] using your distribution's package manger,
+as well as `just`, then run `just build`.
+
+When running, runtime dependencies are `curl`, `rsync`, `ffmpeg`, and `ssh`. If you do not have these installed,
+various features won't work, for example without ffmpeg, you cannot re-encode titles. Without rsync, you cannot
+upload your videos to a remote server.
+
+To run, simply run the resulting executable in the directory with your titles. It should be a directory that
+contains directories that then contain .mkv files.
+
 Task list:
 - [x] TV - Fetch TV show metadata and associate disk titles to numbered episodes
 - [x] TV - Upload entire series to server with `rsync`.
