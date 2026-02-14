@@ -437,7 +437,6 @@ std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(std::string t
                     title.path().string(),
                     title.path().string()
                 ));
-                ret.push_back("sleep 1");
             }
         }
     }
@@ -463,7 +462,7 @@ std::vector<std::string> AppModel::getCommandsToUnDeleteFileForTitle(std::string
                 ret.push_back(std::format(
                     "mv \"{}\" \"{}\"",
                     title.path().string(),
-                    title.path().string().substr(title.path().string().length() - 2)
+                    title.path().string().substr(0, title.path().string().length() - 2)
                 ));
             }
         }

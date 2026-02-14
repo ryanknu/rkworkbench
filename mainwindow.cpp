@@ -376,15 +376,15 @@ MainWindow::MainWindow(QWidget *parent)
         _reflowTaskList();
     });
 
-    connect(worker, &CommandWorker::reflowAll, [&]() {
+    connect(worker, &CommandWorker::reflowAll, this, [&]() {
         _reflowTrees();
         _reflowTaskList();
-    });
+    }, Qt::QueuedConnection);
 
-    connect(worker, &CommandWorker::scanLocalTitles, [&]() {
+    connect(worker, &CommandWorker::scanLocalTitles, this, [&]() {
         appModel->scanLocalTitles();
         _reflowTrees();
-    });
+    }, Qt::QueuedConnection);
 
     connect(worker, &CommandWorker::scanFilesystemForShow, [&](int showId) {
         appModel->scanLocalTmdbData();

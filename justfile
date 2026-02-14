@@ -12,4 +12,4 @@ build:
     {{MOC}} mainwindow.h > moc_mainwindow.cpp
     {{MOC}} commandworker.h > moc_commandworker.cpp
     {{UIC}} mainwindow.ui > ui_mainwindow.h
-    g++ *.cpp {{LIBS}} {{CFLAGS}} {{DBG_OPTS}} -o run
+    g++ *.cpp {{LIBS}} {{CFLAGS}} {{OPTIONS}} -o run
