@@ -85,7 +85,10 @@ void MainWindow::_reflowShowsTree() const {
 
         auto episodeItem = new QStandardItem(q(episode->friendlyTitle()));
         episodeItem->setData(q(episode->id), Qt::UserRole);
-        if (appModel->showHasLocalFile(show.title, episode->seasonKey())) {
+        if (appModel->isConfirmedPlays(episode->id)) {
+            episodeItem->setForeground(QBrush(QColor("cyan")));
+        }
+        else if (appModel->showHasLocalFile(show.title, episode->seasonKey())) {
             episodeItem->setForeground(QBrush(QColor("green")));
         }
         else if (appModel->isIdentified(std::format("{}", episode->id))) {
@@ -318,7 +321,7 @@ MainWindow::MainWindow(QWidget *parent)
 
         QMenu menu;
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
-        menu.addAction(q("Confirm Plays (not implemented)"));
+        auto confirmAction = menu.addAction(q("Confirm Plays (not implemented)"));
 
         // TODO: Upload Episode, disabled if not green
         //       Make Delete show and season work.
@@ -342,6 +345,12 @@ MainWindow::MainWindow(QWidget *parent)
             _queueTasks(
                 appModel->getCommandsToUploadEntireShow(episode.showId)
             );
+        });
+
+        connect(confirmAction, &QAction::triggered, [&]() {
+            auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
+            appModel->confirmPlays(episodeId);
+            _reflowShowsTree();
         });
 
         menu.exec(ui->showsTree->viewport()->mapToGlobal(pos));

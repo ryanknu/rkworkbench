@@ -16,7 +16,7 @@ enum TmdbMode {
 
 class AppModel {
 public:
-    AppModel();
+    AppModel(std::string outDir);
     std::filesystem::path configDirPath();
     std::filesystem::path workingDirPath();
     std::string tmdbMode() const;
@@ -40,6 +40,8 @@ public:
     void setPreprocessorCommand(std::string cmd);
     void identifyEpisode(const std::string& titleId, std::string showId);
     bool isIdentified(const std::string& item) const;
+    void confirmPlays(std::string& episodeId);
+    bool isConfirmedPlays(const std::string& episodeId) const;
     std::vector<std::string> generateJobsFromState();
     int queuedAndPendingJobs();
     void scanLocalTmdbData();
@@ -70,8 +72,10 @@ private:
     std::unordered_map<std::string, std::unique_ptr<RippedTitle>> _mTitles;
     std::unordered_map<std::string, std::filesystem::path> _mLocalEpisodes;
     std::unordered_map<std::string, std::string> _mIdentifiedEpisodes;
+    std::vector<std::string> _mConfirmedEpisodes;
 
     // Configurations
+    std::filesystem::path _mHomeDirPath;
     std::filesystem::path _mConfigDirPath;
     std::filesystem::path _mWorkingDirPath;
     std::string _mTmdbApiKey;
@@ -87,6 +91,8 @@ private:
     void _createDirectories() const;
     void _readApiKey();
     void _writeApiKey() const;
+    void _readWorkingDir(std::string outDir);
+    void _writeWorkingDir() const;
 };
 
 class RippedTitle

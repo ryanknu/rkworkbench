@@ -12,19 +12,18 @@ using json = nlohmann::json;
 
 std::atomic<std::uint64_t> RippedTitle::_mIdSequence = {1};
 
-AppModel::AppModel()
+AppModel::AppModel(std::string outDir)
 {
     // Defaults
     _mTmdbMode = TV;
     _mPreprocessorCommand = "";
     _mTmdbApiKey = "";
 
-    // Set up working directory
-    _mWorkingDirPath = fs::current_path();
-
     // Set up config directory
     auto home = getenv("HOME");
-	_mConfigDirPath = fs::path(home) / ".config" / "rkworkbench";
+    _mHomeDirPath = fs::path(home);
+	_mConfigDirPath = _mHomeDirPath / ".config" / "rkworkbench";
+    _readWorkingDir(outDir);
 
 	// Initialize
 	_createDirectories();
@@ -97,6 +96,52 @@ void AppModel::_writeApiKey() const {
     output_file.open(of);
     if (output_file.is_open()) {
         output_file << _mTmdbApiKey;
+        output_file.close();
+    }
+}
+
+/**
+ * Retrieves the working dir for the application.
+ * Priority Order:
+ * 1. outDir, and SAVE
+ * 2. previous saved dir
+ * 3. working dir, and SAVE
+ */
+void AppModel::_readWorkingDir(std::string outDir)
+{
+    // Handle tilde expansion.
+    if (outDir.substr(0, 2) == "~/") {
+        outDir = std::format("{}{}", _mHomeDirPath.string(), outDir.substr(1));
+    }
+
+    if (!outDir.empty()) {
+        fs::path absDir(outDir);
+        fs::path dir = outDir.front() == '/' ? absDir : fs::canonical(outDir);
+
+        if (fs::exists(dir)) {
+            _mWorkingDirPath = dir;
+            _writeWorkingDir();
+        }
+    }
+
+    std::ifstream t(_mConfigDirPath / "wd.txt");
+    std::stringstream buffer;
+    buffer << t.rdbuf();
+    fs::path workingDir = fs::path(buffer.str());
+    _mWorkingDirPath = workingDir;
+
+    if (_mWorkingDirPath.empty()) {
+        _mWorkingDirPath = fs::current_path();
+        _writeWorkingDir();
+    }
+}
+
+void AppModel::_writeWorkingDir() const {
+    fs::path of = _mConfigDirPath / "wd.txt";
+    std::ofstream output_file;
+    output_file.open(of);
+    if (output_file.is_open()) {
+        output_file << _mWorkingDirPath.string();
         output_file.close();
     }
 }
@@ -359,6 +404,17 @@ bool AppModel::isIdentified(const std::string& item) const {
         return pair.first == item || pair.second == item;
     });
 }
+
+void AppModel::confirmPlays(std::string& episodeId) {
+    if (isIdentified(episodeId)) return;
+    _mConfirmedEpisodes.push_back(std::move(episodeId));
+    // TODO: Write to disk, and read from disk.
+}
+
+bool AppModel::isConfirmedPlays(const std::string& episodeId) const {
+    return std::ranges::find(_mConfirmedEpisodes, episodeId) != _mConfirmedEpisodes.end();
+}
+
 
 RippedTitle::RippedTitle(fs::path path, std::uintmax_t size, std::string diskName, std::string titleName)
 {
