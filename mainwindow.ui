@@ -148,7 +148,7 @@
         <item>
          <widget class="QPushButton" name="gcBtn">
           <property name="text">
-           <string>Collect Garbage (Not Implemented)</string>
+           <string>Collect Garbage</string>
           </property>
          </widget>
         </item>

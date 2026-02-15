@@ -31,6 +31,7 @@ AppModel::AppModel()
 	_readApiKey();
 	scanLocalTmdbData();
 	scanLocalTitles();
+    scanLocalEpisodes();
 }
 
 fs::path AppModel::configDirPath()
@@ -207,23 +208,10 @@ void AppModel::scanLocalTmdbData()
 
 /**
  * Scans the local filesystem for titles.
- */
+*/
 void AppModel::scanLocalTitles()
 {
     _mTitles.clear();
-    _mLocalEpisodes.clear();
-
-    for (const auto& entry : fs::directory_iterator(outputDirectory())) {
-        if (!entry.is_directory()) {
-            continue;
-        }
-
-        auto showName = entry.path().filename().string();
-        for (const auto& entry : fs::directory_iterator(entry.path())) {
-            auto seasonKey = entry.path().filename().string().substr(0, 6);
-            _mLocalEpisodes[std::format("{} {}", showName, seasonKey)] = entry.path();
-        }
-    }
 
     for (const auto& entry : fs::directory_iterator(_mWorkingDirPath)) {
         if (!entry.is_directory()) {
@@ -248,6 +236,28 @@ void AppModel::scanLocalTitles()
             );
 
             _mTitles.emplace(title->id, std::move(title));
+        }
+    }
+}
+
+/**
+ * Scans the local filesystem for properly numbered episodes.
+ * This uses an interesting format that has no formal tie to _mShows,
+ * this way it can be loaded at anytime and exist on its own.
+ */
+void AppModel::scanLocalEpisodes()
+{
+    _mLocalEpisodes.clear();
+
+    for (const auto& entry : fs::directory_iterator(outputDirectory())) {
+        if (!entry.is_directory()) {
+            continue;
+        }
+
+        auto showName = entry.path().filename().string();
+        for (const auto& entry : fs::directory_iterator(entry.path())) {
+            auto seasonKey = entry.path().filename().string().substr(0, 6);
+            _mLocalEpisodes[std::format("{} {}", showName, seasonKey)] = entry.path();
         }
     }
 }
@@ -418,6 +428,7 @@ std::vector<std::string> AppModel::generateJobsFromState()
 
     if (jobs.size() > 0) {
         jobs.push_back("_scanLocalTitles");
+        jobs.push_back("_scanLocalEpisodes");
     }
 
     return jobs;
@@ -426,6 +437,11 @@ std::vector<std::string> AppModel::generateJobsFromState()
 fs::path RippedTitle::path()
 {
     return _mPath;
+}
+
+uintmax_t RippedTitle::size() const
+{
+    return _mSize;
 }
 
 int AppModel::queuedAndPendingJobs()
@@ -445,7 +461,7 @@ std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(const std::st
     }
 
     auto title = titleById(titleId);
-    if (!title.isDeleted()) {
+    if (title.isDeleted()) {
         return { };
     }
 
@@ -459,7 +475,7 @@ std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(const std::st
         cmd,
         // And update the UI
         "_scanLocalTitles",
-        "_reflowAll"
+        "_reflowDisksTree"
     };
 }
 
@@ -484,7 +500,8 @@ std::vector<std::string> AppModel::getCommandsToUnDeleteFileForTitle(const std::
         cmd,
         // And update the UI
         "_scanLocalTitles",
-        "_reflowAll"
+        "_reflowDisksTree",
+        "_reflowGcButton"
     };
 }
 
@@ -506,6 +523,25 @@ std::vector<std::string> AppModel::getCommandsToUploadEntireShow(const std::stri
     return {
         cmd
     };
+}
+
+std::vector<std::string> AppModel::getCommandsToCollectGarbage()
+{
+    std::vector<std::string> ret;
+    for (auto& title : titles()) {
+        if (title->isDeleted()) {
+            ret.push_back(
+                std::format("_rm {}", title->path().string())
+            );
+        }
+    }
+
+    if (!ret.empty()) {
+        ret.emplace_back("_scanLocalTitles");
+        ret.emplace_back("_reflowAll");
+    }
+
+    return ret;
 }
 
 int AppModel::requestedPosition() {
@@ -543,6 +579,30 @@ bool AppModel::hasEpisode(const std::string& id) {
 
 bool AppModel::hasTitle(const std::string& id) {
     return _mTitles.contains(id);
+}
+
+bool AppModel::canGarbageCollect() {
+    for (auto& title : titles()) {
+        if (title->isDeleted()) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string AppModel::getGarbageCollectableBytes() {
+    uintmax_t bytes = 0;
+    for (auto& title : titles()) {
+        if (title->isDeleted()) {
+            bytes += title->size();
+        }
+    }
+
+    double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(1) << gb << "G";
+
+    return ss.str();
 }
 
 

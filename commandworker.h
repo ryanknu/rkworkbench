@@ -24,8 +24,12 @@ public slots:
 signals:
     void commandCompleted();
     void reflowAll();
+    void reflowDisksTree();
+    void reflowShowsTree();
+    void reflowGcButton();
     void scanFilesystemForShow(int showId);
     void scanLocalTitles();
+    void scanLocalEpisodes();
 
 private:
     std::queue<std::string> commandQueue;

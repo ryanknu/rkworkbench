@@ -44,12 +44,16 @@ public:
     int queuedAndPendingJobs();
     void scanLocalTmdbData();
     void scanLocalTitles();
+    void scanLocalEpisodes();
     bool showHasLocalFile(std::string showName, std::string seasonKey);
     std::vector<std::string> getCommandsToDeleteFileForTitle(const std::string& titleId);
     std::vector<std::string> getCommandsToUnDeleteFileForTitle(const std::string& titleId);
     std::vector<std::string> getCommandsToUploadEntireShow(const std::string& showId);
+    std::vector<std::string> getCommandsToCollectGarbage();
     int requestedPosition();
     void setRequestedPosition(int position);
+    bool canGarbageCollect();
+    std::string getGarbageCollectableBytes();
 
     // I need to expose these because the UI generates cURL commands...
     // Maybe a better pattern is to have appModel generate them.
@@ -92,6 +96,7 @@ public:
     std::string diskName();
     std::string friendlyTitle();
     std::filesystem::path path();
+    [[nodiscard]] std::uintmax_t size() const;
     bool isDeleted();
     bool operator<(const RippedTitle& other) const;
 

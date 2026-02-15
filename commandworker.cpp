@@ -28,7 +28,7 @@ void CommandWorker::processQueue()
     while (true) {
         std::string cmd;
         {
-            std::unique_lock<std::mutex> lock(queueMutex);
+            std::unique_lock lock(queueMutex);
             condVar.wait(lock, [this] { return !commandQueue.empty() || !running; });
             if (!running && commandQueue.empty()) break;
             cmd = commandQueue.front();
@@ -37,8 +37,16 @@ void CommandWorker::processQueue()
 
         if (cmd == "_reflowAll") {
             emit reflowAll();
+        } else if (cmd == "_reflowDisksTree") {
+            emit reflowDisksTree();
+        } else if (cmd == "_reflowShowsTree") {
+            emit reflowShowsTree();
+        } else if (cmd == "_reflowGcButton") {
+            emit reflowGcButton();
         } else if (cmd == "_scanLocalTitles") {
             emit scanLocalTitles();
+        } else if (cmd == "_scanLocalEpisodes") {
+            emit scanLocalEpisodes();
         } else if (cmd.starts_with("_scanFsForShow ")) {
             int showId = std::stoi(cmd.substr(15));
             emit scanFilesystemForShow(showId);
@@ -46,6 +54,11 @@ void CommandWorker::processQueue()
             fs::path path(cmd.substr(7));
             if (!fs::exists(path)) {
                 fs::create_directories(path);
+            }
+        } else if (cmd.starts_with("_rm ")) {
+            fs::path path(cmd.substr(4));
+            if (fs::exists(path)) {
+                fs::remove(path);
             }
         } else {
             QStringList parts = QProcess::splitCommand(QString::fromStdString(cmd));

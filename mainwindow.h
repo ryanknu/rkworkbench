@@ -31,7 +31,9 @@ private:
 	CommandWorker *worker;
 	QMediaPlayer *player;
 
-	void _reflowTrees() const;
+	void _reflowDisksTree() const;
+	void _reflowShowsTree() const;
+	void _reflowGcButton() const;
 	void _reflowTaskList();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _queueTask(std::string cmd);

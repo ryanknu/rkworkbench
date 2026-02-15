@@ -11,7 +11,6 @@
 #include <unordered_map>
 #include <algorithm>
 #include <memory>
-#include <string>
 
 namespace fs = std::filesystem;
 
@@ -21,19 +20,55 @@ QString q(const std::string& str)
 }
 
 /**
- * Redraws the UI for the two trees from data in appModel
- * I'm aware this pattern has flaws.
+ * Re-renders the disks tree from app model.
  */
-void MainWindow::_reflowTrees() const {
-    // Get the tree models
-    auto* showsModel = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
+void MainWindow::_reflowDisksTree() const {
     auto* disksModel = dynamic_cast<QStandardItemModel *>(ui->disksTree->model());
-
-    // Empty them out.
-    showsModel->removeRows(0, showsModel->rowCount());
     disksModel->removeRows(0, disksModel->rowCount());
 
-    // Populate show listing
+    std::unordered_map<std::string, QStandardItem*> disks;
+
+    auto titles = appModel->titles();
+    std::ranges::sort(titles,
+        [](RippedTitle* a, RippedTitle* b) {
+            return *a < *b;
+        }
+    );
+
+    for (auto& title : titles) {
+        auto titleItem = new QStandardItem(q(title->friendlyTitle()));
+        titleItem->setData(q(title->id), Qt::UserRole);
+        if (title->isDeleted()) {
+            titleItem->setForeground(QBrush(QColor("red")));
+        }
+        else if (appModel->isIdentified(title->id)) {
+            titleItem->setForeground(QBrush(QColor("orange")));
+        }
+
+        if (!disks.contains(title->diskName())) {
+            auto diskItem = new QStandardItem(q(title->diskName()));
+            diskItem->setSelectable(false);
+            disksModel->invisibleRootItem()
+                ->appendRow(diskItem);
+
+            diskItem->appendRow(titleItem);
+            disks[title->diskName()] = diskItem;
+        } else {
+            auto diskItem = disks[title->diskName()];
+            diskItem->appendRow(titleItem);
+        }
+    }
+
+    ui->disksTree->expandAll();
+}
+
+/**
+ * Re-renders the shows tree from app model.
+ */
+void MainWindow::_reflowShowsTree() const {
+    auto* showsModel = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
+    showsModel->removeRows(0, showsModel->rowCount());
+
     std::unordered_map<std::string, QStandardItem*> showItems;
 
     // Buffer for episodes for sorting
@@ -71,43 +106,14 @@ void MainWindow::_reflowTrees() const {
         }
     }
 
-    // Populate disk listing
-    std::unordered_map<std::string, QStandardItem*> disks;
-
-    auto titles = appModel->titles();
-    std::ranges::sort(titles,
-        [](RippedTitle* a, RippedTitle* b) {
-            return *a < *b;
-        }
-    );
-
-    for (auto& title : titles) {
-        auto titleItem = new QStandardItem(q(title->friendlyTitle()));
-        titleItem->setData(q(title->id), Qt::UserRole);
-        if (title->isDeleted()) {
-            titleItem->setForeground(QBrush(QColor("red")));
-        }
-        else if (appModel->isIdentified(title->id)) {
-            titleItem->setForeground(QBrush(QColor("orange")));
-        }
-
-        if (!disks.contains(title->diskName())) {
-            auto diskItem = new QStandardItem(q(title->diskName()));
-            diskItem->setSelectable(false);
-            disksModel->invisibleRootItem()
-                ->appendRow(diskItem);
-
-            diskItem->appendRow(titleItem);
-            disks[title->diskName()] = diskItem;
-        } else {
-            auto diskItem = disks[title->diskName()];
-            diskItem->appendRow(titleItem);
-        }
-    }
-
     ui->showsTree->expandAll();
-    ui->disksTree->expandAll();
 }
+
+void MainWindow::_reflowGcButton() const {
+    ui->gcBtn->setText(q(std::format("Collect Garbage ({})", appModel->getGarbageCollectableBytes())));
+    ui->gcBtn->setDisabled(!appModel->canGarbageCollect());
+}
+
 
 void MainWindow::_reflowTaskList()
 {
@@ -193,8 +199,10 @@ void MainWindow::setAppModel(AppModel *theModel) {
     ui->disksTree->setModel(disksModel);
     ui->showsTree->setModel(showsModel);
 
-    _reflowTrees();
+    _reflowDisksTree();
+    _reflowShowsTree();
     _reflowTaskList();
+    _reflowGcButton();
 
     ui->disksTree->setRootIsDecorated(false);
     ui->disksTree->setItemsExpandable(false);
@@ -254,7 +262,15 @@ MainWindow::MainWindow(QWidget *parent)
     // Media player, when the content loads, skip to requested position.
     connect(player, &QMediaPlayer::mediaStatusChanged, [&](QMediaPlayer::MediaStatus status) {
         if (status == QMediaPlayer::BufferedMedia) {
-            player->setPosition(appModel->requestedPosition());
+            // Seek video to requested position. Do not allow seeking within 10 seconds of the end
+            // of the title, because QMediaPlayer will unload the video upon reaching the end and
+            // that can make the experience feel bizarre.
+            auto maximum = ui->videoSeek->maximum();
+            auto requested = appModel->requestedPosition();
+            if (requested > maximum - 10000) {
+                requested = maximum - 10000;
+            }
+            player->setPosition(requested);
         }
     });
 
@@ -377,12 +393,17 @@ MainWindow::MainWindow(QWidget *parent)
 
         appModel->identifyEpisode(titleId, showId);
 
-        _reflowTrees();
+        _reflowDisksTree();
+        _reflowShowsTree();
     });
 
     connect(ui->execBtn, &QPushButton::clicked, [&]() {
         auto jobs = appModel->generateJobsFromState();
         _queueTasks(jobs);
+    });
+
+    connect(ui->gcBtn, &QPushButton::clicked, [&]() {
+        _queueTasks(appModel->getCommandsToCollectGarbage());
     });
 
     connect(worker, &CommandWorker::commandCompleted, [&]() {
@@ -391,18 +412,36 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(worker, &CommandWorker::reflowAll, this, [&]() {
-        _reflowTrees();
-        _reflowTaskList();
+        _reflowDisksTree();
+        _reflowShowsTree();
+        _reflowGcButton();
+    }, Qt::QueuedConnection);
+
+    connect(worker, &CommandWorker::reflowDisksTree, this, [&]() {
+        _reflowDisksTree();
+    }, Qt::QueuedConnection);
+
+    connect(worker, &CommandWorker::reflowShowsTree, this, [&]() {
+        _reflowShowsTree();
+    }, Qt::QueuedConnection);
+
+    connect(worker, &CommandWorker::reflowGcButton, this, [&]() {
+        _reflowGcButton();
     }, Qt::QueuedConnection);
 
     connect(worker, &CommandWorker::scanLocalTitles, this, [&]() {
         appModel->scanLocalTitles();
-        _reflowTrees();
+        _reflowDisksTree();
+    }, Qt::QueuedConnection);
+
+    connect(worker, &CommandWorker::scanLocalEpisodes, this, [&]() {
+        appModel->scanLocalEpisodes();
+        _reflowShowsTree();
     }, Qt::QueuedConnection);
 
     connect(worker, &CommandWorker::scanFilesystemForShow, [&](int showId) {
         appModel->scanLocalTmdbData();
-        _reflowTrees();
+        _reflowShowsTree();
         if (showId == 0) {
             return;
         }
