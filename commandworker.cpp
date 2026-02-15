@@ -47,6 +47,8 @@ void CommandWorker::processQueue()
             emit scanLocalTitles();
         } else if (cmd == "_scanLocalEpisodes") {
             emit scanLocalEpisodes();
+        } else if (cmd == "_scanLocalTmdbData") {
+            emit scanLocalTmdbData();
         } else if (cmd.starts_with("_scanFsForShow ")) {
             int showId = std::stoi(cmd.substr(15));
             emit scanFilesystemForShow(showId);

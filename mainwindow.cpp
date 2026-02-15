@@ -114,7 +114,6 @@ void MainWindow::_reflowGcButton() const {
     ui->gcBtn->setDisabled(!appModel->canGarbageCollect());
 }
 
-
 void MainWindow::_reflowTaskList()
 {
     // Get the model
@@ -139,6 +138,7 @@ void MainWindow::_reflowTaskList()
         ui->tasksList->setMaximumHeight(0);
     } else {
         ui->tasksList->setMaximumHeight(200);
+        ui->tasksList->scrollToBottom();
     }
 }
 
@@ -311,11 +311,10 @@ MainWindow::MainWindow(QWidget *parent)
     ui->showsTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     connect(ui->showsTree, &QWidget::customContextMenuRequested, [&](const QPoint &pos) {
-        // TODO: See if this works with the selectedItem helper fn
-        auto index = ui->showsTree->indexAt(pos);
-        if (!index.isValid()) {
-            return;
-        }
+        auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
+        if (!appModel->hasEpisode(episodeId)) return;
+        auto episode = appModel->episodeById(episodeId);
+        auto episodeText = episode.season == 0 ? "specials" : std::format("season {:02}", episode.season);
 
         QMenu menu;
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
@@ -325,7 +324,15 @@ MainWindow::MainWindow(QWidget *parent)
         //       Make Delete show and season work.
         auto deleteMenu = menu.addMenu(q("Delete Stuff"));
         deleteMenu->addAction(q("Delete Show (not implemented)"));
-        deleteMenu->addAction(q("Delete Season (not implemented)"));
+        auto deleteSeason = deleteMenu->addAction(q(std::format("Delete {}", episodeText)));
+
+        connect(deleteSeason, &QAction::triggered, [&]() {
+            auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
+            if (!appModel->hasEpisode(episodeId)) return;
+            auto episode = appModel->episodeById(episodeId);
+
+            _queueTasks(appModel->getCommandsToDeleteSeason(episode.showId, episode.season));
+        });
 
         connect(uploadAction, &QAction::triggered, [&]() {
             auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
@@ -436,6 +443,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(worker, &CommandWorker::scanLocalEpisodes, this, [&]() {
         appModel->scanLocalEpisodes();
+        _reflowShowsTree();
+    }, Qt::QueuedConnection);
+
+    connect(worker, &CommandWorker::scanLocalTmdbData, this, [&]() {
+        appModel->scanLocalTmdbData();
         _reflowShowsTree();
     }, Qt::QueuedConnection);
 

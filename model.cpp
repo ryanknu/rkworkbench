@@ -170,7 +170,7 @@ void AppModel::scanLocalTmdbData()
             // WARNING: Show title is used for remote naming convention. Do not change it without changing
             //          all pathing operations.
             auto title = std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id);
-            auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), title);
+            auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), parsed.id, title);
 
             for (auto& season : jf["seasons"]) {
                 show->pushSeason(season["season_number"].get<int>());
@@ -262,9 +262,10 @@ void AppModel::scanLocalEpisodes()
     }
 }
 
-Show::Show(std::string _id, std::string _title)
+Show::Show(std::string _id, int _number, std::string _title)
 {
     id = std::move(_id);
+    number = _number;
     seasons = { };
     title = std::move(_title);
 }
@@ -476,6 +477,20 @@ std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(const std::st
         // And update the UI
         "_scanLocalTitles",
         "_reflowDisksTree"
+    };
+}
+
+std::vector<std::string> AppModel::getCommandsToDeleteSeason(const std::string& showId, int seasonNumber) {
+    if (!hasShow(showId)) {
+        return { };
+    }
+
+    auto show = showById(showId);
+    auto fileName = std::format("{}-S{:02}.json", show.number, seasonNumber);
+    auto seasonPath = tvDirectory() / fileName;
+    return {
+        std::format("_rm {}", seasonPath.string()),
+        "_scanLocalTmdbData",
     };
 }
 

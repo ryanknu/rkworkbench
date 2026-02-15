@@ -4,7 +4,7 @@ A simple tool to manage an ingest process.
 
 ## Building & Running
 
-To build, ensure you've installed dependencies in (justfile)[justfile] using your distribution's package manger,
+To build, ensure you've installed dependencies in [justfile](justfile) using your distribution's package manger,
 as well as `just`, then run `just build`.
 
 When running, runtime dependencies are `curl`, `rsync`, `ffmpeg`, and `ssh`. If you do not have these installed,
@@ -22,6 +22,7 @@ Task list:
 - [ ] Docker - Manage ripper container
 - [ ] TV - Delete season and series metadata.
 - [ ] TV - 2-part episodes
+- [ ] TV - Episode splitter
 - [ ] TV - Title combiner
 - [ ] Film - Fetch film metadata
 - [ ] Film - Upload film to server
