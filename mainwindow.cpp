@@ -11,12 +11,27 @@
 #include <unordered_map>
 #include <algorithm>
 #include <memory>
+#include <QMouseEvent>
 
 namespace fs = std::filesystem;
 
 QString q(const std::string& str)
 {
     return QString::fromStdString(str);
+}
+
+
+void setMouseTrackingRecursive(QWidget *parent, bool enable) {
+    if (!parent) return;
+
+    // Set for the parent widget
+    parent->setMouseTracking(enable);
+
+    // Recursively set for all children
+    QList<QWidget *> children = parent->findChildren<QWidget *>();
+    for (QWidget *child : children) {
+        child->setMouseTracking(enable);
+    }
 }
 
 /**
@@ -231,6 +246,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    setMouseTrackingRecursive(this, true);
 
     // Spin up background thread
     worker = new CommandWorker();
@@ -491,4 +507,43 @@ MainWindow::MainWindow(QWidget *parent)
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::mouseReleaseEvent(QMouseEvent *event)
+{
+    qDebug() << "Resetting drag";
+    appModel->resetDrag();
+}
+
+void MainWindow::mouseMoveEvent(QMouseEvent *event)
+{
+    if (!(event->buttons() & Qt::LeftButton)) {
+        return;
+    }
+
+    QPoint pos = event->pos();
+    if (appModel->getCurrentDragXOffset() == 0) {
+        appModel->setInitialDragData(
+            pos.x(),
+            ui->disksTree->width(),
+            ui->showsTree->width()
+        );
+    } else {
+        appModel->setDragCurrentX(pos.x());
+    }
+
+    auto offset = appModel->getCurrentDragXOffset();
+    if (offset != 0) {
+        auto treesMask = appModel->getTreesMask();
+        if (treesMask & 1) {
+            qDebug() << "Setting showsTree to" << appModel->getCurrentShowsTreeWidth();
+            ui->showsTree->setMaximumWidth(appModel->getCurrentShowsTreeWidth());
+        }
+        if (treesMask & 2) {
+            qDebug() << "Setting disksTree to" << appModel->getCurrentDisksTreeWidth();
+            ui->disksTree->setMaximumWidth(appModel->getCurrentDisksTreeWidth());
+        }
+    }
+
+    QWidget::mouseMoveEvent(event);
 }

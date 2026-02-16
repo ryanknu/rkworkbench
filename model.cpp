@@ -676,4 +676,34 @@ std::string AppModel::getGarbageCollectableBytes() {
     return ss.str();
 }
 
+void AppModel::resetDrag() {
+    _mDragInitialX = 0;
+    _mDragCurrentX = 0;
+}
 
+void AppModel::setInitialDragData(int x, int disksTreeWidth, int showsTreeWidth) {
+    _mDragInitialX = x;
+    _mInitialDisksTreeWidth = disksTreeWidth;
+    _mInitialShowsTreeWidth = showsTreeWidth;
+    _mWhichTree = x > (disksTreeWidth + 20) ? 1 : 2;
+}
+
+void AppModel::setDragCurrentX(int x) {
+    _mDragCurrentX = x;
+}
+
+int AppModel::getCurrentDragXOffset() {
+    return _mDragCurrentX - _mDragInitialX;
+}
+
+int AppModel::getCurrentDisksTreeWidth() {
+    return std::max(100, _mInitialDisksTreeWidth + getCurrentDragXOffset());
+}
+
+int AppModel::getCurrentShowsTreeWidth() {
+    return std::max(100, _mInitialShowsTreeWidth + getCurrentDragXOffset());
+}
+
+int AppModel::getTreesMask() {
+    return _mWhichTree;
+}

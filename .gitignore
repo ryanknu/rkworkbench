@@ -1,6 +1,6 @@
 moc_*
 ui_*
-run
+rwkb
 *.kdev4
 CMakeLists.txt
 cmake-build-debug

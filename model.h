@@ -58,6 +58,15 @@ public:
     bool canGarbageCollect();
     std::string getGarbageCollectableBytes();
 
+    // Splitter for tree widths
+    void resetDrag();
+    void setInitialDragData(int x, int disksTreeWidth, int showsTreeWidth);
+    void setDragCurrentX(int x);
+    int getCurrentDragXOffset();
+    int getCurrentDisksTreeWidth();
+    int getCurrentShowsTreeWidth();
+    int getTreesMask();
+
     // I need to expose these because the UI generates cURL commands...
     // Maybe a better pattern is to have appModel generate them.
     std::filesystem::path tvDirectory() const;
@@ -87,6 +96,13 @@ private:
 
     // Media player
     int _mRequestedPosition = 0;
+
+    // Splitter for tree widths
+    int _mDragInitialX = 0;
+    int _mDragCurrentX = 0;
+    int _mInitialDisksTreeWidth = 200;
+    int _mInitialShowsTreeWidth = 200;
+    int _mWhichTree = 0;
 
     void _createDirectories() const;
     void _readApiKey();
