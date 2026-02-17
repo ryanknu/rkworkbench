@@ -43,11 +43,20 @@ void CommandWorker::processQueue()
             emit reflowShowsTree();
         } else if (cmd == "_reflowGcButton") {
             emit reflowGcButton();
+        } else if (cmd.starts_with("_removeLocalSeason ")) {
+            std::istringstream iss(cmd.substr(19));
+            std::string showId;
+            int seasonNumber;
+            if (iss >> showId >> seasonNumber) {
+                emit removeLocalSeason(showId, seasonNumber);
+            } else {
+                qDebug() << "Invalid arguments for" << cmd;
+            }
         } else if (cmd == "_scanLocalTitles") {
             emit scanLocalTitles();
         } else if (cmd == "_scanLocalEpisodes") {
             emit scanLocalEpisodes();
-        } else if (cmd == "_scanLocalTmdbData ") {
+        } else if (cmd.starts_with("_scanLocalTmdbData ")) {
             emit scanLocalTmdbData(cmd.substr(19));
         } else if (cmd.starts_with("_scanFsForShow ")) {
             int showId = std::stoi(cmd.substr(15));

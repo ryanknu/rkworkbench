@@ -45,11 +45,12 @@ public:
     std::vector<std::string> generateJobsFromState();
     int queuedAndPendingJobs();
     void scanLocalTmdbData(const std::string& filter);
+    void removeLocalSeason(std::string showId, int seasonNumber);
     void scanLocalTitles();
     void scanLocalEpisodes();
     bool showHasLocalFile(std::string showName, std::string seasonKey);
     std::vector<std::string> getCommandsToDeleteFileForTitle(const std::string& titleId);
-    std::vector<std::string> getCommandsToDeleteSeason(const std::string& showId, int seasonNumber);
+    std::vector<std::string> getCommandsToDeleteSeason(const std::string& episodeId);
     std::vector<std::string> getCommandsToUnDeleteFileForTitle(const std::string& titleId);
     std::vector<std::string> getCommandsToUploadEntireShow(const std::string& showId);
     std::vector<std::string> getCommandsToCollectGarbage();
@@ -134,11 +135,12 @@ private:
 class Show
 {
     public:
-        Show(std::string _id, int _number, std::string title);
+        Show(std::string _id, int _number, std::string title, std::filesystem::path path);
         std::string id;
         int number;
         std::vector<int> seasons;
         std::string title;
+        std::filesystem::path path;
 
         void pushSeason(int season);
 };
@@ -146,11 +148,12 @@ class Show
 class Episode
 {
     public:
-        Episode(std::string _id, int _season, int _number, std::string _showId, std::string _title);
+        Episode(std::string _id, int _season, int _number, std::string _showId, std::string _title, std::filesystem::path _seasonPath);
         std::string id;
         int season;
         int number;
         std::string showId;
+        std::filesystem::path seasonPath;
 
         std::string title;
         std::string seasonKey();

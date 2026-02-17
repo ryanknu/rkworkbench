@@ -350,7 +350,7 @@ MainWindow::MainWindow(QWidget *parent)
             if (!appModel->hasEpisode(episodeId)) return;
             auto episode = appModel->episodeById(episodeId);
 
-            _queueTasks(appModel->getCommandsToDeleteSeason(episode.showId, episode.season));
+            _queueTasks(appModel->getCommandsToDeleteSeason(episode.id));
         });
 
         connect(uploadAction, &QAction::triggered, [&]() {
@@ -473,6 +473,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(worker, &CommandWorker::scanLocalTmdbData, this, [&]() {
         appModel->scanLocalTmdbData("*");
+        _reflowShowsTree();
+    }, Qt::QueuedConnection);
+
+    connect(worker, &CommandWorker::removeLocalSeason, this, [&](std::string showId, int seasonNumber) {
+        appModel->removeLocalSeason(showId, seasonNumber);
         _reflowShowsTree();
     }, Qt::QueuedConnection);
 

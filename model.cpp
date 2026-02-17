@@ -181,7 +181,6 @@ bool detectSeasonJson(const fs::path& path) {
 
 /**
  * Scans the local filesystem for cached TMBD data.
- * TODO: Add an <invert> op, which looks for *missing* files, and removes them.
  */
 void AppModel::scanLocalTmdbData(const std::string& filter)
 {
@@ -218,7 +217,7 @@ void AppModel::scanLocalTmdbData(const std::string& filter)
                 // WARNING: Show title is used for remote naming convention. Do not change it without changing
                 //          all pathing operations.
                 auto title = std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id);
-                auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), parsed.id, title);
+                auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), parsed.id, title, entry.path());
 
                 for (auto& season : jf["seasons"]) {
                     show->pushSeason(season["season_number"].get<int>());
@@ -228,7 +227,7 @@ void AppModel::scanLocalTmdbData(const std::string& filter)
             } catch (...) {
                 // Put a dummy show & episode in the tree so we can see the error.
                 auto showId = entry.path().filename().string();
-                auto show = std::make_unique<Show>(std::format("show.{}", showId), 0, std::format("{} ERROR", showId));
+                auto show = std::make_unique<Show>(std::format("show.{}", showId), 0, std::format("{} ERROR", showId), entry.path());
                 _mShows.emplace(show->id, std::move(show));
 
                 auto episode = std::make_unique<Episode>(
@@ -236,7 +235,8 @@ void AppModel::scanLocalTmdbData(const std::string& filter)
                     0,
                     0,
                     std::format("show.{}", showId),
-                    std::format("{} ERROR", showId)
+                    std::format("{} ERROR", showId),
+                    entry.path()
                 );
 
                 _mEpisodes.emplace(episode->id, std::move(episode));
@@ -261,11 +261,23 @@ void AppModel::scanLocalTmdbData(const std::string& filter)
                     parsed.season_number,
                     parsed.episode_number,
                     std::format("show.{}", parsed.show_id),
-                    parsed.name
+                    parsed.name,
+                    entry.path()
                 );
 
                 _mEpisodes.emplace(episode->id, std::move(episode));
             }
+        }
+    }
+}
+
+void AppModel::removeLocalSeason(std::string showId, int seasonNumber) {
+    // TODO: Don't allow this if local media would be orphaned.
+    for (auto el = _mEpisodes.begin(); el != _mEpisodes.end();) {
+        if (el->second->showId == showId && el->second->season == seasonNumber) {
+            el = _mEpisodes.erase(el);
+        } else {
+            ++el;
         }
     }
 }
@@ -326,12 +338,13 @@ void AppModel::scanLocalEpisodes()
     }
 }
 
-Show::Show(std::string _id, int _number, std::string _title)
+Show::Show(std::string _id, int _number, std::string _title, std::filesystem::path _path)
 {
     id = std::move(_id);
     number = _number;
     seasons = { };
     title = std::move(_title);
+    path = _path;
 }
 
 void Show::pushSeason(int season)
@@ -339,13 +352,14 @@ void Show::pushSeason(int season)
     seasons.push_back(season);
 }
 
-Episode::Episode(std::string _id, int _season, int _number, std::string _showId, std::string _title)
+Episode::Episode(std::string _id, int _season, int _number, std::string _showId, std::string _title, std::filesystem::path _seasonPath)
 {
     id = std::move(_id);
     season = _season;
     number = _number;
     showId = std::move(_showId);
     title = std::move(_title);
+    seasonPath = _seasonPath;
 }
 
 std::vector<std::string> *AppModel::tasks()
@@ -555,17 +569,21 @@ std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(const std::st
     };
 }
 
-std::vector<std::string> AppModel::getCommandsToDeleteSeason(const std::string& showId, int seasonNumber) {
-    if (!hasShow(showId)) {
+/**
+ * Gets comands to delete a season.
+ * @param episodeId - Any episode whose season is to be deleted.
+ * @return
+ */
+std::vector<std::string> AppModel::getCommandsToDeleteSeason(const std::string& episodeId) {
+    if (!hasEpisode(episodeId)) {
         return { };
     }
 
-    auto show = showById(showId);
-    auto fileName = std::format("{}-S{:02}.json", show.number, seasonNumber);
-    auto seasonPath = tvDirectory() / fileName;
+    auto episode = episodeById(episodeId);
+    auto fileName = episode.seasonPath;
     return {
-        std::format("_rm {}", seasonPath.string()),
-        "_scanLocalTmdbData *",
+        std::format("_rm {}", fileName.string()),
+        std::format("_removeLocalSeason {} {}", episode.showId, episode.season),
     };
 }
 
