@@ -438,10 +438,10 @@ MainWindow::MainWindow(QWidget *parent)
         _queueTasks(appModel->getCommandsToCollectGarbage());
     });
 
-    connect(worker, &CommandWorker::commandCompleted, [&]() {
+    connect(worker, &CommandWorker::commandCompleted, this, [&]() {
         appModel->popTask();
         _reflowTaskList();
-    });
+    }, Qt::QueuedConnection);
 
     connect(worker, &CommandWorker::reflowAll, this, [&]() {
         _reflowDisksTree();
@@ -472,19 +472,22 @@ MainWindow::MainWindow(QWidget *parent)
     }, Qt::QueuedConnection);
 
     connect(worker, &CommandWorker::scanLocalTmdbData, this, [&]() {
-        appModel->scanLocalTmdbData();
+        appModel->scanLocalTmdbData("*");
         _reflowShowsTree();
     }, Qt::QueuedConnection);
 
-    connect(worker, &CommandWorker::scanFilesystemForShow, [&](int showId) {
-        appModel->scanLocalTmdbData();
+    connect(worker, &CommandWorker::scanFilesystemForShow, this, [&](int showId) {
+        appModel->scanLocalTmdbData(std::format("tv/{}.json", showId));
         _reflowShowsTree();
         if (showId == 0) {
             return;
         }
 
-        auto id = std::to_string(showId);
-        if (!appModel->hasShow(id)) return;
+        auto id = std::format("show.{}", showId);
+        if (!appModel->hasShow(id)) {
+            qDebug() << "Show" << id << "not found, no seasons to pull";
+            return;
+        };
         auto show = appModel->showById(id);
 
         for (auto seasonNr : show.seasons) {
@@ -501,7 +504,7 @@ MainWindow::MainWindow(QWidget *parent)
             _queueTask(cmd);
             _queueTask("_scanFsForShow 0"); // TODO: make scanFsForAll or something
         }
-    });
+    }, Qt::QueuedConnection);
 }
 
 MainWindow::~MainWindow()
@@ -511,7 +514,6 @@ MainWindow::~MainWindow()
 
 void MainWindow::mouseReleaseEvent(QMouseEvent *event)
 {
-    qDebug() << "Resetting drag";
     appModel->resetDrag();
 }
 

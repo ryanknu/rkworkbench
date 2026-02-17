@@ -28,7 +28,7 @@ AppModel::AppModel(std::string outDir)
 	// Initialize
 	_createDirectories();
 	_readApiKey();
-	scanLocalTmdbData();
+	scanLocalTmdbData("*");
 	scanLocalTitles();
     scanLocalEpisodes();
 }
@@ -181,12 +181,10 @@ bool detectSeasonJson(const fs::path& path) {
 
 /**
  * Scans the local filesystem for cached TMBD data.
+ * TODO: Add an <invert> op, which looks for *missing* files, and removes them.
  */
-void AppModel::scanLocalTmdbData()
+void AppModel::scanLocalTmdbData(const std::string& filter)
 {
-    _mShows.clear();
-    _mEpisodes.clear();
-
     struct TvShowData {
         int id;
         std::string first_air_date;
@@ -202,26 +200,47 @@ void AppModel::scanLocalTmdbData()
     };
 
     for (const auto& entry : fs::directory_iterator(tvDirectory())) {
+        if (filter != "*" && !entry.path().string().contains(filter)) {
+            continue;
+        }
+
         if (detectShowJson(entry.path())) {
-            std::ifstream ifs(entry.path());
-            json jf = json::parse(ifs);
+            try {
+                std::ifstream ifs(entry.path());
+                json jf = json::parse(ifs);
 
-            TvShowData parsed {
-                jf["id"].get<int>(),
-                jf["first_air_date"].get<std::string>(),
-                jf["name"].get<std::string>()
-            };
+                TvShowData parsed {
+                    jf["id"].get<int>(),
+                    jf["first_air_date"].get<std::string>(),
+                    jf["name"].get<std::string>()
+                };
 
-            // WARNING: Show title is used for remote naming convention. Do not change it without changing
-            //          all pathing operations.
-            auto title = std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id);
-            auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), parsed.id, title);
+                // WARNING: Show title is used for remote naming convention. Do not change it without changing
+                //          all pathing operations.
+                auto title = std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id);
+                auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), parsed.id, title);
 
-            for (auto& season : jf["seasons"]) {
-                show->pushSeason(season["season_number"].get<int>());
+                for (auto& season : jf["seasons"]) {
+                    show->pushSeason(season["season_number"].get<int>());
+                }
+
+                _mShows.emplace(show->id, std::move(show));
+            } catch (...) {
+                // Put a dummy show & episode in the tree so we can see the error.
+                auto showId = entry.path().filename().string();
+                auto show = std::make_unique<Show>(std::format("show.{}", showId), 0, std::format("{} ERROR", showId));
+                _mShows.emplace(show->id, std::move(show));
+
+                auto episode = std::make_unique<Episode>(
+                    std::format("ep.{}", showId),
+                    0,
+                    0,
+                    std::format("show.{}", showId),
+                    std::format("{} ERROR", showId)
+                );
+
+                _mEpisodes.emplace(episode->id, std::move(episode));
             }
-
-            _mShows.emplace(show->id, std::move(show));
         }
 
         if (detectSeasonJson(entry.path())) {
@@ -546,7 +565,7 @@ std::vector<std::string> AppModel::getCommandsToDeleteSeason(const std::string& 
     auto seasonPath = tvDirectory() / fileName;
     return {
         std::format("_rm {}", seasonPath.string()),
-        "_scanLocalTmdbData",
+        "_scanLocalTmdbData *",
     };
 }
 

@@ -44,7 +44,7 @@ public:
     bool isConfirmedPlays(const std::string& episodeId) const;
     std::vector<std::string> generateJobsFromState();
     int queuedAndPendingJobs();
-    void scanLocalTmdbData();
+    void scanLocalTmdbData(const std::string& filter);
     void scanLocalTitles();
     void scanLocalEpisodes();
     bool showHasLocalFile(std::string showName, std::string seasonKey);

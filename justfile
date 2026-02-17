@@ -1,8 +1,10 @@
-OPTIONS := "-fPIC -std=c++20 -fuse-ld=mold"
+OPTIONS := "-fPIC -std=c++23 -fuse-ld=mold"
 DBG_OPTS := f'{{OPTIONS}} -g -fsanitize=address -pthread'
 DEPS := "Qt6Core Qt6Widgets Qt6Multimedia Qt6MultimediaWidgets nlohmann_json"
 CFLAGS := shell(f'pkg-config --cflags {{DEPS}}')
 LIBS := shell(f'pkg-config --libs {{DEPS}}')
+EXE := "rkwb"
+LOCAL_PATH := f'/usr/local/bin/{{EXE}}'
 
 QTTOOLS := `pkg-config --variable=libexecdir Qt6Core`
 MOC := f'{{QTTOOLS}}/moc'
@@ -12,4 +14,10 @@ build:
     {{MOC}} mainwindow.h > moc_mainwindow.cpp
     {{MOC}} commandworker.h > moc_commandworker.cpp
     {{UIC}} mainwindow.ui > ui_mainwindow.h
-    g++ *.cpp {{LIBS}} {{CFLAGS}} {{OPTIONS}} -o rkwb
+    g++ *.cpp {{LIBS}} {{CFLAGS}} {{OPTIONS}} -o {{EXE}}
+
+install:
+    @if [ ! -f {{EXE}} ]; then \
+        just build; \
+    fi; \
+    cp {{EXE}} {{LOCAL_PATH}}

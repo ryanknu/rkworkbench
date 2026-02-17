@@ -30,7 +30,7 @@ signals:
     void scanFilesystemForShow(int showId);
     void scanLocalTitles();
     void scanLocalEpisodes();
-    void scanLocalTmdbData();
+    void scanLocalTmdbData(std::string filter);
 
 private:
     std::queue<std::string> commandQueue;
