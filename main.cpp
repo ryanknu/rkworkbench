@@ -9,16 +9,16 @@ int main(int argc, char *argv[])
 	std::setlocale(LC_COLLATE, nullptr);
 
 	// Read in requested output directory from launch args.
-	std::string outDir = argc == 2 ? argv[1] : "";
+	std::string mediaDir = argc == 2 ? argv[1] : "";
 
     // Initialize app model.
     // We create the model before the UI to allow model construction to be a little slow.
-    auto* gModel = new AppModel(outDir);
+    auto* gModel = new AppModel(mediaDir);
 
     // Initialize Qt
 	QApplication a(argc, argv);
 	MainWindow w;
-	w.setAppModel(gModel);
+	w.setAppModel(gModel, mediaDir);
 	w.show();
 	return a.exec();
 }

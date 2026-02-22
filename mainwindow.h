@@ -22,9 +22,17 @@ class MainWindow : public QMainWindow
 public:
 	explicit MainWindow(QWidget *parent = nullptr);
 	~MainWindow() override;
-	void setAppModel(AppModel *theModel);
+	void setAppModel(AppModel *theModel, std::string mediaDir);
 	void mouseMoveEvent(QMouseEvent *event) override;
 	void mouseReleaseEvent(QMouseEvent *event) override;
+
+	Q_INVOKABLE
+	void processMessage(std::string message);
+
+	void _addTreeItem(std::string tree, std::string id, std::string parentText, std::string text, std::string color, std::string after);
+	void _changeTreeItemColor(std::string tree, std::string id, std::string color);
+	void _changeGarbageSize(std::uint64_t size);
+	void _hideTmdbApiKeyInput();
 
 private:
 	Ui::MainWindow *ui;
@@ -42,3 +50,13 @@ private:
 	void _queueTasks(std::vector<std::string> cmds);
 	int _getRequestedPosition();
 };
+
+void callback_wrapper(void* ptr, const char* message);
+
+extern "C" {
+	typedef void (*message_callback_t)(void* ptr, const char* message);
+	void start_rust_processing(void* ptr, const char* media_dir, message_callback_t callback);
+	// void uc_echo(const char* message);
+	void initial_load();
+	void map_media(const char* from, const char* to);
+}

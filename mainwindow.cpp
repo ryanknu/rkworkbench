@@ -12,8 +12,10 @@
 #include <algorithm>
 #include <memory>
 #include <QMouseEvent>
+#include <nlohmann/json.hpp>
 
 namespace fs = std::filesystem;
+using json = nlohmann::json;
 
 QString q(const std::string& str)
 {
@@ -34,102 +36,159 @@ void setMouseTrackingRecursive(QWidget *parent, bool enable) {
     }
 }
 
+void MainWindow::_addTreeItem(std::string treeName, std::string id, std::string parentText, std::string text, std::string color, std::string after) {
+    auto tree = ui->showsTree;
+    if (treeName == "Files") {
+        tree = ui->disksTree;
+    }
+
+    // Make item
+    auto item = new QStandardItem(text.data());
+    item->setData(q(id.data()), Qt::UserRole);
+    if (color != "Default") {
+        item->setForeground(QBrush(QColor(color.c_str())));
+    }
+
+    // Find or create parent
+    auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
+    auto items = model->findItems(parentText.data());
+    if (items.empty()) {
+        auto parent = new QStandardItem(parentText.data());
+        parent->setSelectable(false);
+        model->invisibleRootItem()
+            ->appendRow(parent);
+        parent->appendRow(item);
+    } else {
+        items.at(0)->appendRow(item);
+    }
+
+    tree->expandAll();
+}
+
+void MainWindow::_changeTreeItemColor(std::string treeName, std::string id, std::string color) {
+    auto tree = ui->showsTree;
+    if (treeName == "Files") {
+        tree = ui->disksTree;
+    }
+
+    auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
+    auto items = model->match(model->index(0, 0), Qt::UserRole, q(id), 1, Qt::MatchExactly | Qt::MatchRecursive);
+
+    // TODO: If the item is selected, we should unselect it so you can see the new color.
+    tree->clearSelection();
+
+    if (!items.empty() && items.at(0).isValid()) {
+        auto item = model->itemFromIndex(items.at(0));
+        item->setForeground(QBrush(QColor(color.c_str())));
+    }
+}
+
+void MainWindow::_changeGarbageSize(std::uint64_t size) {
+    ui->gcBtn->setText(q(std::format("Collect Garbage ({})", size)));
+    ui->gcBtn->setDisabled(size < 1);
+}
+
+void MainWindow::_hideTmdbApiKeyInput() {
+    // TODO: Add button or something to bring it back.
+    ui->tmdbApiKey->hide();
+}
+
 /**
  * Re-renders the disks tree from app model.
  */
 void MainWindow::_reflowDisksTree() const {
-    auto* disksModel = dynamic_cast<QStandardItemModel *>(ui->disksTree->model());
-    disksModel->removeRows(0, disksModel->rowCount());
-
-    std::unordered_map<std::string, QStandardItem*> disks;
-
-    auto titles = appModel->titles();
-    std::ranges::sort(titles,
-        [](RippedTitle* a, RippedTitle* b) {
-            return *a < *b;
-        }
-    );
-
-    for (auto& title : titles) {
-        auto titleItem = new QStandardItem(q(title->friendlyTitle()));
-        titleItem->setData(q(title->id), Qt::UserRole);
-        if (title->isDeleted()) {
-            titleItem->setForeground(QBrush(QColor("red")));
-        }
-        else if (appModel->isIdentified(title->id)) {
-            titleItem->setForeground(QBrush(QColor("orange")));
-        }
-
-        if (!disks.contains(title->diskName())) {
-            auto diskItem = new QStandardItem(q(title->diskName()));
-            diskItem->setSelectable(false);
-            disksModel->invisibleRootItem()
-                ->appendRow(diskItem);
-
-            diskItem->appendRow(titleItem);
-            disks[title->diskName()] = diskItem;
-        } else {
-            auto diskItem = disks[title->diskName()];
-            diskItem->appendRow(titleItem);
-        }
-    }
-
-    ui->disksTree->expandAll();
+    // auto* disksModel = dynamic_cast<QStandardItemModel *>(ui->disksTree->model());
+    // disksModel->removeRows(0, disksModel->rowCount());
+    //
+    // std::unordered_map<std::string, QStandardItem*> disks;
+    //
+    // auto titles = appModel->titles();
+    // std::ranges::sort(titles,
+    //     [](RippedTitle* a, RippedTitle* b) {
+    //         return *a < *b;
+    //     }
+    // );
+    //
+    // for (auto& title : titles) {
+    //     auto titleItem = new QStandardItem(q(title->friendlyTitle()));
+    //     titleItem->setData(q(title->id), Qt::UserRole);
+    //     if (title->isDeleted()) {
+    //         titleItem->setForeground(QBrush(QColor("red")));
+    //     }
+    //     else if (appModel->isIdentified(title->id)) {
+    //         titleItem->setForeground(QBrush(QColor("orange")));
+    //     }
+    //
+    //     if (!disks.contains(title->diskName())) {
+    //         auto diskItem = new QStandardItem(q(title->diskName()));
+    //         diskItem->setSelectable(false);
+    //         disksModel->invisibleRootItem()
+    //             ->appendRow(diskItem);
+    //
+    //         diskItem->appendRow(titleItem);
+    //         disks[title->diskName()] = diskItem;
+    //     } else {
+    //         auto diskItem = disks[title->diskName()];
+    //         diskItem->appendRow(titleItem);
+    //     }
+    // }
+    //
+    // ui->disksTree->expandAll();
 }
 
 /**
  * Re-renders the shows tree from app model.
  */
 void MainWindow::_reflowShowsTree() const {
-    auto* showsModel = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
-    showsModel->removeRows(0, showsModel->rowCount());
-
-    std::unordered_map<std::string, QStandardItem*> showItems;
-
-    // Buffer for episodes for sorting
-    auto episodes = appModel->episodes();
-    std::ranges::sort(episodes,
-        [](Episode* a, Episode* b) {
-            return *a < *b;
-        }
-    );
-
-    for (auto& episode : episodes) {
-        if (!appModel->hasShow(episode->showId)) continue;
-        auto show = appModel->showById(episode->showId);
-
-        auto episodeItem = new QStandardItem(q(episode->friendlyTitle()));
-        episodeItem->setData(q(episode->id), Qt::UserRole);
-        if (appModel->isConfirmedPlays(episode->id)) {
-            episodeItem->setForeground(QBrush(QColor("cyan")));
-        }
-        else if (appModel->showHasLocalFile(show.title, episode->seasonKey())) {
-            episodeItem->setForeground(QBrush(QColor("green")));
-        }
-        else if (appModel->isIdentified(std::format("{}", episode->id))) {
-            episodeItem->setForeground(QBrush(QColor("orange")));
-        }
-
-        if (!showItems.contains(show.id)) {
-            auto showItem = new QStandardItem(q(show.title));
-            showItem->setSelectable(false);
-            showsModel->invisibleRootItem()
-                ->appendRow(showItem);
-
-            showItem->appendRow(episodeItem);
-            showItems.emplace(show.id, showItem);
-        } else {
-            auto showItem = showItems.at(show.id);
-            showItem->appendRow(episodeItem);
-        }
-    }
-
-    ui->showsTree->expandAll();
+    // auto* showsModel = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
+    // showsModel->removeRows(0, showsModel->rowCount());
+    //
+    // std::unordered_map<std::string, QStandardItem*> showItems;
+    //
+    // // Buffer for episodes for sorting
+    // auto episodes = appModel->episodes();
+    // std::ranges::sort(episodes,
+    //     [](Episode* a, Episode* b) {
+    //         return *a < *b;
+    //     }
+    // );
+    //
+    // for (auto& episode : episodes) {
+    //     if (!appModel->hasShow(episode->showId)) continue;
+    //     auto show = appModel->showById(episode->showId);
+    //
+    //     auto episodeItem = new QStandardItem(q(episode->friendlyTitle()));
+    //     episodeItem->setData(q(episode->id), Qt::UserRole);
+    //     if (appModel->isConfirmedPlays(episode->id)) {
+    //         episodeItem->setForeground(QBrush(QColor("cyan")));
+    //     }
+    //     else if (appModel->showHasLocalFile(show.title, episode->seasonKey())) {
+    //         episodeItem->setForeground(QBrush(QColor("green")));
+    //     }
+    //     else if (appModel->isIdentified(std::format("{}", episode->id))) {
+    //         episodeItem->setForeground(QBrush(QColor("orange")));
+    //     }
+    //
+    //     if (!showItems.contains(show.id)) {
+    //         auto showItem = new QStandardItem(q(show.title));
+    //         showItem->setSelectable(false);
+    //         showsModel->invisibleRootItem()
+    //             ->appendRow(showItem);
+    //
+    //         showItem->appendRow(episodeItem);
+    //         showItems.emplace(show.id, showItem);
+    //     } else {
+    //         auto showItem = showItems.at(show.id);
+    //         showItem->appendRow(episodeItem);
+    //     }
+    // }
+    //
+    // ui->showsTree->expandAll();
 }
 
 void MainWindow::_reflowGcButton() const {
-    ui->gcBtn->setText(q(std::format("Collect Garbage ({})", appModel->getGarbageCollectableBytes())));
-    ui->gcBtn->setDisabled(!appModel->canGarbageCollect());
+    // ui->gcBtn->setText(q(std::format("Collect Garbage ({})", appModel->getGarbageCollectableBytes())));
+    // ui->gcBtn->setDisabled(!appModel->canGarbageCollect());
 }
 
 void MainWindow::_reflowTaskList()
@@ -199,11 +258,14 @@ std::string MainWindow::_getIdForSelectedItemInTree(QTreeView *&tree)
     return data.toString().toStdString();
 }
 
-void MainWindow::setAppModel(AppModel *theModel) {
+void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     appModel = theModel;
 
+    // Spin up background thread (2)
+    start_rust_processing(this, mediaDir.c_str(), callback_wrapper);
+
     // Initial population of UI from `theModel`.
-    ui->tmdbApiKey->setText(q(appModel->tmdbApiKey()));
+    // ui->tmdbApiKey->setText(q(appModel->tmdbApiKey()));
     ui->tmdbModeBtn->setText(q(appModel->tmdbMode()));
 
     // Initialize task list model
@@ -420,13 +482,9 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->identifyBtn, &QPushButton::clicked, [&]() {
-        auto showId = _getIdForSelectedItemInTree(ui->showsTree);
-        auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-
-        appModel->identifyEpisode(titleId, showId);
-
-        _reflowDisksTree();
-        _reflowShowsTree();
+        auto to = _getIdForSelectedItemInTree(ui->showsTree);
+        auto from = _getIdForSelectedItemInTree(ui->disksTree);
+        map_media(from.c_str(), to.c_str());
     });
 
     connect(ui->execBtn, &QPushButton::clicked, [&]() {
@@ -553,4 +611,47 @@ void MainWindow::mouseMoveEvent(QMouseEvent *event)
     }
 
     QWidget::mouseMoveEvent(event);
+}
+
+void MainWindow::processMessage(std::string message) {
+    qDebug() << "[ cpp] incoming message:" << message;
+    if (message == "\"WorkerReady\"") {
+        initial_load();
+    } else if (message == "\"RecalledConfirmedTmdbApiKey\"") {
+        _hideTmdbApiKeyInput();
+    }
+
+    // The message is (probably) JSON
+    json m = json::parse(message);
+
+    try {
+        auto tree = m["AddTreeItem"]["tree"].get<std::string>();
+        auto id = m["AddTreeItem"]["item"]["id"].get<std::string>();
+        auto parentText = m["AddTreeItem"]["item"]["parent_text"].get<std::string>();
+        auto text = m["AddTreeItem"]["item"]["text"].get<std::string>();
+        auto color = m["AddTreeItem"]["item"]["color"].get<std::string>();
+        std::string after = m["AddTreeItem"]["after"].is_null() ? "" : m["AddTreeItem"].value("after", "");
+
+        _addTreeItem(tree, id, parentText, text, color, after);
+    } catch (...) {}
+
+    try {
+        auto tree = m["ChangeTreeItem"]["tree"].get<std::string>();
+        auto id = m["ChangeTreeItem"]["id"].get<std::string>();
+        auto color = m["ChangeTreeItem"]["change"]["ChangeColor"].get<std::string>();
+
+        _changeTreeItemColor(tree, id, color);
+    } catch (...) {}
+
+    try {
+        auto garbageSize = m["ChangeGarbageSize"]["size"].get<std::uint64_t>();
+        _changeGarbageSize(garbageSize);
+    } catch (...) {}
+}
+
+void callback_wrapper(void* ptr, const char* message) {
+    std::string msg(message);
+    if (auto* client = static_cast<MainWindow*>(ptr)) {
+        QMetaObject::invokeMethod(client, "processMessage", Qt::QueuedConnection, Q_ARG(std::string, msg));
+    }
 }

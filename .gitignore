@@ -3,6 +3,9 @@ ui_*
 rwkb
 *.kdev4
 
+target
+.idea
+
 # Don't commit CMake files. I am not using cmake, but clion seems driven towards it.
 CMakeLists.txt
 cmake-build-debug
