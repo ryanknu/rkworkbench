@@ -22,6 +22,7 @@ pub struct TmdbCache {
 pub struct TmdbFilm {
     pub(crate) id: usize,
     pub(crate) title: String,
+    pub(crate) original_title: String,
     pub(crate) release_date: String,
     overview: String,
     poster_path: Option<String>,
@@ -50,6 +51,7 @@ pub struct TmdbTvShow {
     pub(crate) id: usize,
     pub(crate) first_air_date: String,
     pub(crate) name: String,
+    pub(crate) original_name: String,
     seasons: Vec<TmdbTvShowSeasonsVec>,
 }
 

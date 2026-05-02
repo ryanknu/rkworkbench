@@ -96,7 +96,7 @@ pub fn build_tv_shows_tree(state: &MediaState) -> Vec<UiEvent> {
             item: TreeItem {
                 id: episode.id().to_owned(),
                 parent_id: Some(episode.show_id.0.clone()),
-                parent_text: state.tv_show_key(&episode.show_id).unwrap_or(String::from("ERROR")),
+                parent_text: episode.show_name.clone(),
                 text,
                 color,
             },
@@ -123,7 +123,7 @@ pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
             item: TreeItem {
                 id: film.id().to_owned(),
                 parent_id: Some(film.film_id.0.clone()),
-                parent_text: film.film_key().to_owned(),
+                parent_text: film.film_name.clone(),
                 text,
                 color,
             },

@@ -135,11 +135,12 @@ private:
 class Show
 {
     public:
-        Show(std::string _id, int _number, std::string title, std::filesystem::path path);
+        Show(std::string _id, int _number, std::string title, std::string originalTitle, std::filesystem::path path);
         std::string id;
         int number;
         std::vector<int> seasons;
         std::string title;
+        std::string originalTitle;
         std::filesystem::path path;
 
         void pushSeason(int season);

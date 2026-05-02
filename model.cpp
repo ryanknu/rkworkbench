@@ -188,6 +188,7 @@ void AppModel::scanLocalTmdbData(const std::string& filter)
         int id;
         std::string first_air_date;
         std::string name;
+        std::string original_name;
     };
 
     struct TvEpisodeData {
@@ -211,13 +212,15 @@ void AppModel::scanLocalTmdbData(const std::string& filter)
                 TvShowData parsed {
                     jf["id"].get<int>(),
                     jf["first_air_date"].get<std::string>(),
-                    jf["name"].get<std::string>()
+                    jf["name"].get<std::string>(),
+                    jf.contains("original_name") ? jf["original_name"].get<std::string>() : jf["name"].get<std::string>()
                 };
 
-                // WARNING: Show title is used for remote naming convention. Do not change it without changing
-                //          all pathing operations.
-                auto title = std::format("{} ({}) [tmdb={}]", parsed.name, parsed.first_air_date.substr(0, 4), parsed.id);
-                auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), parsed.id, title, entry.path());
+                // WARNING: Show originalTitle is used for remote naming convention. Do not change it without
+                //          changing all pathing operations.
+                auto title = std::format("{} ({})", parsed.name, parsed.first_air_date.substr(0, 4));
+                auto originalTitle = std::format("{} ({}) [tmdb={}]", parsed.original_name, parsed.first_air_date.substr(0, 4), parsed.id);
+                auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), parsed.id, title, originalTitle, entry.path());
 
                 for (auto& season : jf["seasons"]) {
                     show->pushSeason(season["season_number"].get<int>());
@@ -227,7 +230,7 @@ void AppModel::scanLocalTmdbData(const std::string& filter)
             } catch (...) {
                 // Put a dummy show & episode in the tree so we can see the error.
                 auto showId = entry.path().filename().string();
-                auto show = std::make_unique<Show>(std::format("show.{}", showId), 0, std::format("{} ERROR", showId), entry.path());
+                auto show = std::make_unique<Show>(std::format("show.{}", showId), 0, std::format("{} ERROR", showId), showId, entry.path());
                 _mShows.emplace(show->id, std::move(show));
 
                 auto episode = std::make_unique<Episode>(
@@ -338,12 +341,13 @@ void AppModel::scanLocalEpisodes()
     }
 }
 
-Show::Show(std::string _id, int _number, std::string _title, std::filesystem::path _path)
+Show::Show(std::string _id, int _number, std::string _title, std::string _originalTitle, std::filesystem::path _path)
 {
     id = std::move(_id);
     number = _number;
     seasons = { };
     title = std::move(_title);
+    originalTitle = std::move(_originalTitle);
     path = _path;
 }
 
@@ -504,7 +508,7 @@ std::vector<std::string> AppModel::generateJobsFromState()
         auto show = showById(episode.showId);
 
         // RK: I don't like this being located here. The show's directory should be something like Show::outDir()
-        auto outDir = outputDirectory() / show.title;
+        auto outDir = outputDirectory() / show.originalTitle;
 
         if (!fs::exists(outDir)) {
             auto cmd = std::format("_mkDir {}", outDir.string());
@@ -620,12 +624,12 @@ std::vector<std::string> AppModel::getCommandsToUploadEntireShow(const std::stri
     }
 
     auto show = showById(showId);
-    const auto showDir = outputDirectory() / show.title;
+    const auto showDir = outputDirectory() / show.originalTitle;
 
     auto cmd = std::format(
         "rsync -a \"{}/\" \"root@10.4.6.2:/mnt/user/emby/tv/{}/\"",
         showDir.string(),
-        show.title
+        show.originalTitle
     );
 
     return {

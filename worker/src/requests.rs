@@ -161,11 +161,11 @@ pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Str
     media.push_film(&film);
 
     let mut results = vec![
-        get_add_tree_item_for_film(&media, film.id.0.to_string(), film.id.0.to_string(), film.film_key.clone(), "Feature Presentation".to_owned())
+        get_add_tree_item_for_film(&media, film.id.0.to_string(), film.id.0.to_string(), film.name.clone(), "Feature Presentation".to_owned())
     ];
 
     results.extend(
-        videos.results.into_iter().map(|video| get_add_tree_item_for_film(&media, video.id, film.id.0.to_string(), film.film_key.clone(), format!("{} - {}", video.r#type, video.name)))
+        videos.results.into_iter().map(|video| get_add_tree_item_for_film(&media, video.id, film.id.0.to_string(), film.name.clone(), format!("{} - {}", video.r#type, video.name)))
     );
     
     results
@@ -207,7 +207,7 @@ pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Strin
                 &media,
                 episode.id.0.to_string(),
                 show.id.0.to_string(),
-                show.show_key.clone(),
+                show.name.clone(),
                 format!("{} - {}", episode.series_key, episode.name)
             ));
         }

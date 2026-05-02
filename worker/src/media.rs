@@ -185,6 +185,7 @@ pub struct FilmVideo {
     pub(crate) tmdb_id: String,
     pub(crate) name: String,
     pub(crate) ty: String,
+    pub(crate) film_name: String,
     pub(crate) film_key: String,
 }
 
@@ -544,6 +545,7 @@ impl Film {
             tmdb_id: self.tmdb_id.to_string(),
             name: "Feature Presentation".to_string(),
             ty: "FeaturePresentation".to_string(),
+            film_name: self.name.clone(),
             film_key: self.film_key().to_owned(),
         }
     }

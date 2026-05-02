@@ -9,7 +9,7 @@ impl From<TmdbFilm> for Film {
             tmdb_id: value.id,
             name: value.title.clone(),
             release_date: value.release_date.clone(),
-            film_key: format!("{} ({}) [tmdb={}]", value.title, &value.release_date[0..4], value.id),
+            film_key: format!("{} ({}) [tmdb={}]", value.original_title, &value.release_date[0..4], value.id),
         }
     }
 }
@@ -17,7 +17,7 @@ impl From<TmdbFilm> for Film {
 impl From<TmdbTvShow> for TvShow {
     fn from(value: TmdbTvShow) -> Self {
         TvShow {
-            show_key: format!("{} ({}) [tmdb={}]", value.name, &value.first_air_date[0..4], value.id),
+            show_key: format!("{} ({}) [tmdb={}]", value.original_name, &value.first_air_date[0..4], value.id),
             id: TvShowId(value.id.to_string()),
             tmdb_id: value.id,
             name: value.name,
@@ -55,6 +55,7 @@ impl FilmVideoBuilder {
             film_id: film.id.clone(),
             name: self.name,
             ty: self.ty,
+            film_name: film.name.clone(),
         }
     }
 }
