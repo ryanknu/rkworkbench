@@ -7,7 +7,7 @@
     <x>0</x>
     <y>0</y>
     <width>1167</width>
-    <height>817</height>
+    <height>869</height>
    </rect>
   </property>
   <property name="windowTitle">
@@ -45,6 +45,22 @@
       </item>
       <item>
        <widget class="QTreeView" name="showsTree">
+        <property name="minimumSize">
+         <size>
+          <width>200</width>
+          <height>0</height>
+         </size>
+        </property>
+        <property name="maximumSize">
+         <size>
+          <width>280</width>
+          <height>16777215</height>
+         </size>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QTreeView" name="filmsTree">
         <property name="minimumSize">
          <size>
           <width>200</width>

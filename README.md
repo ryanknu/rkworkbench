@@ -1,34 +1,78 @@
-# Ingest Workbench
+# Ingest Workbench (rkwb)
 
-A simple tool to manage an ingest process.
+A tool to manage the media ingest process, specifically for organizing ripped TV shows and films, identifying them via TMDB, and processing them for final storage.
+
+## Architecture
+
+Ingest Workbench uses a hybrid architecture to combine the strengths of different ecosystems:
+
+- **Frontend (C++/Qt 6)**: Handles the user interface, media playback (via `QMediaPlayer`), and high-level application logic. It uses a `CommandWorker` thread to execute shell commands like `ffmpeg` and `rsync`.
+- **Backend (Rust)**: Responsible for data modeling, filesystem operations, and background processing. It is built as a static library (`worker/`) and linked into the main C++ application.
+- **Messaging System**: C++ and Rust communicate via an asynchronous messaging system. Rust sends JSON-serialized events (like updating a tree view's contents) back to the C++ frontend through a dedicated FFI callback.
+
+## Features
+
+- **Media Management**: Organize ripped titles into TV shows or Films.
+- **Metadata Integration**: Fetch show and episode data from The Movie Database (TMDB).
+- **Integrated Player**: Preview titles directly within the app to confirm content.
+- **Task Queue**: Background execution of long-running tasks like re-encoding or uploading.
+- **Filesystem Mapping**: Link local ripped files to identified media metadata.
+- **Garbage Collection**: Identify and delete source files once they have been processed.
 
 ## Building & Running
 
-To build, ensure you've installed dependencies in [justfile](justfile) using your distribution's package manger,
-as well as `just`, then run `just build`.
+### Dependencies
 
-When running, runtime dependencies are `curl`, `rsync`, `ffmpeg`, and `ssh`. If you do not have these installed,
-various features won't work, for example without ffmpeg, you cannot re-encode titles. Without rsync, you cannot
-upload your videos to a remote server.
+To build the project, you need:
+- **Qt 6** (Core, Widgets, Multimedia)
+- **Rust** (Cargo)
+- **GCC** (with C++23 support)
+- **just** (command runner)
+- **pkg-config**
+- **nlohmann_json** (C++ JSON library)
 
-To run, simply run the resulting executable in the directory with your titles. It should be a directory that
-contains directories that then contain .mkv files.
+Runtime dependencies for various features:
+- `curl`: For API requests.
+- `rsync` & `ssh`: For uploading media to remote servers.
+- `ffmpeg`: For media re-encoding.
 
-*Note*: This directory is saved, and reloaded upon subsequent launches. If you do get stuck in the wrong directory
-and want to change it, simply run `rkwb .` in the correct directory, or, pass in a path.
+### Build Instructions
 
-Task list:
-- [x] TV - Fetch TV show metadata and associate disk titles to numbered episodes
-- [x] TV - Upload entire series to server with `rsync`.
-- [ ] Titles - Check FS for changes to titles in background.
-- [ ] Config - Create and store config for remote server
-- [ ] Docker - Manage ripper container
-- [ ] TV - Delete season and series metadata.
-- [ ] TV - 2-part episodes
-- [ ] TV - Episode splitter
-- [ ] TV - Title combiner
-- [ ] Film - Fetch film metadata
-- [ ] Film - Upload film to server
-- [ ] Film - Manage extras directory
-- [ ] Media - Pre-processor command
-- [x] Player - Replace phonon with QMediaPlayer, add start second, and controls.
+Ensure all dependencies are installed, then run:
+
+```bash
+just build
+```
+
+This will:
+1. Generate Qt MOC and UIC files.
+2. Build the Rust backend in release mode.
+3. Compile the C++ frontend and link it with the Rust backend.
+4. Produce the `rkwb` executable.
+
+### Installation
+
+To install the executable to `/usr/local/bin`:
+
+```bash
+just install
+```
+
+### Usage
+
+Run the `rkwb` executable in a directory containing your media titles (usually directories containing `.mkv` files).
+
+```bash
+./rkwb [path/to/media]
+```
+
+The application saves the last used directory and will reload it on subsequent launches.
+
+## Development
+
+- **C++ Source**: Root directory (`*.cpp`, `*.h`, `*.ui`).
+- **Rust Source**: `worker/` directory.
+- **Build Logic**: `justfile`.
+
+### Messaging Protocol
+The communication between Rust and C++ uses a JSON-based protocol defined in `worker/src/ui.rs`. Messages are processed in C++ in `MainWindow::processMessage`.

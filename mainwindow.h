@@ -39,7 +39,11 @@ private:
 	std::filesystem::path configPath;
 	AppModel *appModel;
 	CommandWorker *worker;
+	QAudioOutput *audioOutput;
 	QMediaPlayer *player;
+
+	// UI State
+	int _mRequestedPlayerPosition = 0;
 
 	void _reflowDisksTree() const;
 	void _reflowShowsTree() const;
@@ -48,7 +52,6 @@ private:
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _queueTask(std::string cmd);
 	void _queueTasks(std::vector<std::string> cmds);
-	int _getRequestedPosition();
 };
 
 void callback_wrapper(void* ptr, const char* message);
@@ -56,7 +59,14 @@ void callback_wrapper(void* ptr, const char* message);
 extern "C" {
 	typedef void (*message_callback_t)(void* ptr, const char* message);
 	void start_rust_processing(void* ptr, const char* media_dir, message_callback_t callback);
-	// void uc_echo(const char* message);
+
+	// Fast requests to the backend
+	const char* get_filename_for_title_id(const char* id);
+	void free_string(const char* str);
+
+	// Commands that the worker thread can work.
 	void initial_load();
-	void map_media(const char* from, const char* to);
+	void lookup_film(const char* id, const char* api_key);
+	void map_tv_episode(const char* from, const char* to);
+	void map_film_video(const char* from, const char* to);
 }

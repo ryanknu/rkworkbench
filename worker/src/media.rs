@@ -1,19 +1,22 @@
 use std::cell::{Ref, RefCell};
 use std::cmp::PartialEq;
 use std::env::home_dir;
-use std::fmt::Debug;
-use std::fs::DirEntry;
-use std::path::PathBuf;
+use std::fmt::{format, Debug};
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use serde::{Deserialize, Serialize};
 use ulid::Ulid;
 use walkdir::WalkDir;
+use crate::tmdb::TmdbCache;
 
 pub struct MediaState {
+    tmdb_cache: TmdbCache,
     tmdb_api_key: Option<String>,
     media_dir: PathBuf,
     config_dir: PathBuf,
     file_backed_titles: RefCell<Vec<FileBackedTitle>>,
+    films: RefCell<Vec<Film>>,
+    film_videos: RefCell<Vec<FilmVideo>>,
     tv_shows: RefCell<Vec<TvShow>>,
     tv_show_episodes: RefCell<Vec<TvShowEpisode>>,
 }
@@ -76,10 +79,16 @@ impl MediaState {
         };
 
         Self {
+            tmdb_cache: TmdbCache {
+                dir: config_dir.clone(),
+                tmdb_base_url: "https://api.themoviedb.org/3".to_string(),
+            },
             tmdb_api_key,
             media_dir,
             config_dir,
             file_backed_titles: Default::default(),
+            films: Default::default(),
+            film_videos: Default::default(),
             tv_shows: Default::default(),
             tv_show_episodes: Default::default(),
         }
@@ -104,28 +113,41 @@ pub enum MediaId {
     SemanticNameKey(String),
     TvShow(TvShowId),
     TvEpisode(TvEpisodeId),
+    Film(FilmId),
+    FilmVideo(FilmVideoId),
 }
 
-#[derive(Clone, Deserialize, Serialize)]
-pub enum ConstMediaId {
-    TvShow(TvShowId),
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub enum MappableMediaId {
     TvEpisode(TvEpisodeId),
+    FilmVideo(FilmVideoId),
+}
+
+/// Represents media items that are actually playable. E.g. TV shows and albums are not directly
+/// playable, you must play their episodes or tracks.
+pub enum MediaItem {
+    FilmVideo(FilmVideo),
+    TvShowEpisode(TvShowEpisode),
 }
 
 #[derive(Clone, Deserialize, Serialize)]
-pub struct TvShowId(String);
-#[derive(Clone, Deserialize, Serialize)]
+pub struct TvShowId(pub String);
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub struct FilmId(pub String);
+#[derive(Clone, Deserialize, Serialize, Debug)]
+pub struct FilmVideoId(pub String);
+#[derive(Clone, Deserialize, Serialize, Debug)]
 pub struct TvEpisodeId(pub String);
-#[derive(Clone, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Deserialize, PartialEq, Serialize, Debug)]
 pub struct FileBackedTitleId(pub String);
 
+#[derive(Clone)]
 pub struct TvShow {
-    id: TvShowId,
-    tmdb_id: usize,
-    name: String,
-    first_air_date: String,
-    path: PathBuf,
-    show_key: String,
+    pub id: TvShowId,
+    pub tmdb_id: usize,
+    pub name: String,
+    pub first_air_date: String,
+    pub show_key: String,
 }
 
 pub struct TvShowSeason {
@@ -133,16 +155,37 @@ pub struct TvShowSeason {
     path: PathBuf,
 }
 
+#[derive(Clone)]
 pub struct TvShowEpisode {
-    id: TvEpisodeId,
-    tmdb_id: usize,
-    season_number: usize,
-    season_path: PathBuf,
-    number: usize,
-    name: String,
-    show_name: String,
-    show_id: TvShowId,
-    series_key: String,
+    pub id: TvEpisodeId,
+    pub tmdb_id: usize,
+    pub season_number: usize,
+    pub number: usize,
+    pub name: String,
+    pub show_name: String,
+    pub show_id: TvShowId,
+    pub series_key: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct Film {
+    pub id: FilmId,
+    pub tmdb_id: usize,
+    pub name: String,
+    pub release_date: String,
+    pub film_key: String,
+}
+
+#[derive(Clone)]
+
+pub struct FilmVideo {
+    pub(crate) id: FilmVideoId,
+    pub(crate) film_id: FilmId,
+    // RK: tmdb_id for FilmVideo is likely an Option<String>, feature presentations don't have one.
+    pub(crate) tmdb_id: String,
+    pub(crate) name: String,
+    pub(crate) ty: String,
+    pub(crate) film_key: String,
 }
 
 #[derive(Clone)]
@@ -154,6 +197,18 @@ pub struct FileBackedTitle {
     collection: String,
     file_name: String,
     file_size: u64,
+}
+
+impl PartialEq<&TvEpisodeId> for TvEpisodeId {
+    fn eq(&self, other: &&TvEpisodeId) -> bool {
+        self.0 == other.0
+    }
+}
+
+impl PartialEq<&FilmVideoId> for FilmVideoId {
+    fn eq(&self, other: &&FilmVideoId) -> bool {
+        self.0 == other.0
+    }
 }
 
 impl MediaState {
@@ -213,106 +268,6 @@ impl MediaState {
         titles.sort_by_key(|title| format!("{}{}", title.collection, title.file_name));
     }
 
-    /// Reads the local media metadata.
-    /// Stored in your XDG_CONFIG_HOME/rkworkbench/<media type> directories.
-    /// For TV, file locations are:
-    ///   tv/{id}.json -- series data
-    ///   tv/{id}-SXX.json -- episode data for season XX.
-    pub fn read_local_media_metadata(&self) {
-        println!("[rust] scanning local media metadata in {:?}", self.config_dir);
-
-        #[derive(Deserialize)]
-        struct SeriesFileSeasonsVec {
-            season_number: usize,
-        }
-
-        #[derive(Deserialize)]
-        struct SeriesFileContents {
-            id: usize,
-            first_air_date: String,
-            name: String,
-            seasons: Vec<SeriesFileSeasonsVec>,
-        }
-
-        #[derive(Deserialize)]
-        struct SeasonFileEpisodeContents {
-            id: usize,
-            name: String,
-            episode_number: usize,
-            season_number: usize,
-            show_id: usize,
-        }
-
-        #[derive(Deserialize)]
-        struct SeasonFileContents {
-            episodes: Vec<SeasonFileEpisodeContents>,
-        }
-
-        // I need to buffer episodes while reading them in case we encounter them before their
-        // associated series.
-        let mut episodes_vec: Vec<SeasonFileEpisodeContents> = Vec::new();
-
-        for entry in WalkDir::new(&self.config_dir).into_iter().filter_map(|e| e.ok()) {
-            if entry.path().is_dir() {
-                continue;
-            }
-
-            // Only scan the "tv" folder
-            if !entry.path().components().any(|c| c.as_os_str() == "tv") {
-                continue;
-            }
-
-            let data = std::fs::read(&entry.path()).unwrap();
-            let series = serde_json::from_slice::<SeriesFileContents>(&data);
-            if let Ok(series) = series {
-                let year = &series.first_air_date[0..4];
-                let show_key = format!("{} ({}) [tmdb={}]", series.name, year, series.id);
-                let show = TvShow {
-                    id: TvShowId(series.id.to_string()),
-                    tmdb_id: series.id,
-                    name: series.name,
-                    first_air_date: series.first_air_date,
-                    path: entry.path().to_owned(),
-                    show_key,
-                };
-
-                let mut shows = self.tv_shows.borrow_mut();
-                shows.push(show);
-                continue;
-            }
-
-            let season = serde_json::from_slice::<SeasonFileContents>(&data);
-            if let Ok(season) = season {
-                episodes_vec.extend(season.episodes);
-                continue;
-            }
-
-            println!("Unreadable: {}", entry.path().display());
-        }
-
-        let tv_shows = self.tv_shows.borrow();
-        let mut tv_show_episodes = self.tv_show_episodes.borrow_mut();
-        tv_show_episodes.extend(episodes_vec.iter().filter_map(|episode| {
-            let Some(show) = tv_shows.iter().find(|show| show.tmdb_id == episode.show_id) else {
-                return None;
-            };
-
-            Some(TvShowEpisode {
-                id: TvEpisodeId(episode.id.to_string()),
-                tmdb_id: episode.id,
-                season_number: episode.season_number,
-                season_path: Default::default(), // Hm.
-                number: episode.episode_number,
-                name: episode.name.clone(),
-                show_name: show.name.clone(),
-                show_id: show.id.clone(),
-                series_key: format!("S{:0>2}E{:0>2}", episode.season_number, episode.episode_number),
-            })
-        }));
-
-        tv_show_episodes.sort_by_key(|title| format!("{}{}", title.show_name, title.series_key));
-    }
-
     pub fn file_backed_titles(&self) -> Ref<'_, [FileBackedTitle]> {
         Ref::map(self.file_backed_titles.borrow(), |v| v.as_slice())
     }
@@ -321,27 +276,126 @@ impl MediaState {
         Ref::map(self.tv_show_episodes.borrow(), |v| v.as_slice())
     }
 
+    pub fn films(&self) -> Ref<'_, [Film]> {
+        Ref::map(self.films.borrow(), |v| v.as_slice())
+    }
+
+    pub fn film_videos(&self) -> Ref<'_, [FilmVideo]> {
+        Ref::map(self.film_videos.borrow(), |v| v.as_slice())
+    }
+
     pub fn tv_show_key(&self, id: &TvShowId) -> Option<String> {
         self.tv_shows.borrow().iter().find(|show| show.id.0 == id.0).map(|show| show.show_key.to_owned())
     }
 
-    pub fn map_media(&self, from: FileBackedTitleId, to: MediaId) -> bool {
+    /// Maps a file on disk to a verified media item. If the mapping is successful, we return the
+    /// item. Otherwise we return None.
+    pub fn map_media(&self, from: &FileBackedTitleId, to: &MappableMediaId) -> Option<MediaItem> {
         let mut titles = self.file_backed_titles.borrow_mut();
 
         for title in titles.iter_mut() {
-            if title.id == from {
-                let mut new_title = title.to_owned();
-                new_title.mapped_media = Some(to);
-                *title = new_title;
-                return true;
+            if title.id == *from {
+                match to {
+                    MappableMediaId::TvEpisode(id) => {
+                        for item in self.tv_show_episodes.borrow().iter() {
+                            if item.id == id {
+                                let mut new_title = title.to_owned();
+                                new_title.mapped_media = Some(MediaId::TvEpisode(item.id.clone()));
+                                *title = new_title;
+                                return Some(MediaItem::TvShowEpisode(item.to_owned()));
+                            }
+                        }
+                    }
+                    MappableMediaId::FilmVideo(id) => {
+                        for item in self.film_videos.borrow().iter() {
+                            if item.id == id {
+                                let mut new_title = title.to_owned();
+                                new_title.mapped_media = Some(MediaId::FilmVideo(item.id.clone()));
+                                *title = new_title;
+                                return Some(MediaItem::FilmVideo(item.to_owned()));
+                            }
+                        }
+                    }
+                }
             }
         }
 
-        false
+        None
     }
 
     pub fn has_confirmed_tmdb_api_key(&self) -> bool {
         self.tmdb_api_key.is_some()
+    }
+
+    pub fn get_tmdb_api_key(&self) -> &str {
+        self.tmdb_api_key.as_ref().unwrap()
+    }
+
+    pub fn get_movie_file_location(&self, tmdb_id: &str) -> PathBuf {
+        self.config_dir.join("movies").join(format!("{tmdb_id}.json"))
+    }
+
+    pub fn get_movie_videos_file_location(&self, tmdb_id: &str) -> PathBuf {
+        self.config_dir.join("movies").join(format!("{tmdb_id}-videos.json"))
+    }
+
+    pub fn get_file_backed_title_path(&self, id: &FileBackedTitleId) -> Option<PathBuf> {
+        self.file_backed_titles
+            .borrow()
+            .iter()
+            .find(|title| title.id == *id)
+            .map(|title| title.path.clone())
+    }
+
+    pub fn tmdb(&self) -> &TmdbCache {
+        &self.tmdb_cache
+    }
+
+    pub fn get_film_by_tmdb_id(&self, tmdb_id: usize) -> Option<Film> {
+        self.films.borrow().iter().find(|film| film.tmdb_id == tmdb_id).cloned()
+    }
+
+    pub fn get_show_by_tmdb_id(&self, tmdb_id: usize) -> Option<TvShow> {
+        self.tv_shows.borrow().iter().find(|film| film.tmdb_id == tmdb_id).cloned()
+    }
+
+    pub fn push_film_owned(&self, film: Film) {
+        self.push_film_videos(vec![film.feature_presentation_video()]);
+        self.films.borrow_mut().push(film);
+    }
+
+    pub fn push_film_videos(&self, films: Vec<FilmVideo>) {
+        self.film_videos.borrow_mut().extend(films);
+    }
+
+    pub fn push_tv_show(&self, show: TvShow) {
+        self.tv_shows.borrow_mut().push(show);
+    }
+
+    pub fn push_tv_show_episodes(&self, episodes: Vec<TvShowEpisode>) {
+        self.tv_show_episodes.borrow_mut().extend(episodes);
+    }
+
+    pub fn push_film(&self, film: &Film) {
+        self.push_film_videos(vec![film.feature_presentation_video()]);
+        self.films.borrow_mut().push(film.to_owned());
+    }
+
+    pub fn sort_collections(&self) {
+        let mut titles = self.file_backed_titles.borrow_mut();
+        titles.sort_by_key(|title| title.collection.to_lowercase());
+
+        let mut films = self.films.borrow_mut();
+        films.sort_by_key(|film| film.film_key().to_lowercase());
+
+        let mut film_videos = self.film_videos.borrow_mut();
+        film_videos.sort_by_key(|video| format!("{}{}", video.film_key, video.name));
+
+        let mut tv_shows = self.tv_shows.borrow_mut();
+        tv_shows.sort_by_key(|show| show.show_key.to_lowercase());
+
+        let mut tv_show_episodes = self.tv_show_episodes.borrow_mut();
+        tv_show_episodes.sort_by_key(|episode| format!("{}{}", episode.show_name, episode.series_key));
     }
 }
 
@@ -369,6 +423,10 @@ impl FileBackedTitle {
     pub fn is_mapped(&self) -> bool {
         self.mapped_media.is_some()
     }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 }
 
 impl TvShowEpisode {
@@ -389,11 +447,60 @@ impl TvShowEpisode {
     }
 }
 
-impl ConstMediaId {
+impl Film {
+    pub fn id(&self) -> &str {
+        self.id.0.as_str()
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn film_key(&self) -> &str {
+        self.film_key.as_str()
+    }
+
+    /// Creates the default presentation video for this film.
+    fn feature_presentation_video(&self) -> FilmVideo {
+        FilmVideo {
+            id: FilmVideoId(format!("fp.{}", self.id())),
+            film_id: FilmId(self.id().to_owned()),
+            tmdb_id: self.tmdb_id.to_string(),
+            name: "Feature Presentation".to_string(),
+            ty: "FeaturePresentation".to_string(),
+            film_key: self.film_key().to_owned(),
+        }
+    }
+}
+
+impl FilmVideo {
+    pub fn id(&self) -> &str {
+        self.id.0.as_str()
+    }
+
+    pub fn name(&self) -> &str {
+        self.name.as_str()
+    }
+
+    pub fn film_key(&self) -> &str {
+        self.film_key.as_str()
+    }
+
+    pub fn get_ideal_storage_path(&self) -> Vec<String> {
+        // This is for MKV's of FP only
+        vec![
+            "movies".to_owned(),
+            self.film_key.to_owned(),
+            format!("{}.mkv", self.film_key)
+        ]
+    }
+}
+
+impl MappableMediaId {
     pub fn id(&self) -> &str {
         match self {
-            ConstMediaId::TvEpisode(id) => id.0.as_str(),
-            ConstMediaId::TvShow(id) => id.0.as_str(),
+            MappableMediaId::TvEpisode(id) => id.0.as_str(),
+            MappableMediaId::FilmVideo(id) => id.0.as_str(),
         }
     }
 }

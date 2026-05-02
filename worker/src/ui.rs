@@ -1,12 +1,13 @@
 use serde::Serialize;
-use crate::media::{ConstMediaId, FileBackedTitleId, MediaState};
+use crate::media::{MappableMediaId, FileBackedTitleId, MediaState, TvEpisodeId};
 use crate::requests::IncomingRequest;
 use crate::ui::TreeItemChange::ChangeColor;
 
 #[derive(Serialize)]
 pub enum Tree {
     Files,
-    Media,
+    TvShows,
+    Films,
 }
 
 #[derive(Serialize)]
@@ -69,15 +70,31 @@ pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
     ).collect()
 }
 
-pub fn build_media_tree(state: &MediaState) -> Vec<UiEvent> {
+pub fn build_tv_shows_tree(state: &MediaState) -> Vec<UiEvent> {
     // TODO: Identify mapped media here.
     state.tv_show_episodes().iter().map(|episode|
         UiEvent::AddTreeItem {
-            tree: Tree::Media,
+            tree: Tree::TvShows,
             item: TreeItem {
                 id: episode.id().to_owned(),
                 parent_text: state.tv_show_key(episode.show_id()).unwrap_or(String::from("ERROR")),
                 text: format!("{} - {}", episode.series_key(), episode.name()),
+                color: "Default".to_owned(),
+            },
+            after: None,
+        }
+    ).collect()
+}
+
+pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
+    // TODO: Identify mapped media here.
+    state.film_videos().iter().map(|film|
+        UiEvent::AddTreeItem {
+            tree: Tree::Films,
+            item: TreeItem {
+                id: film.id().to_owned(),
+                parent_text: film.film_key().to_owned(),
+                text: film.name().to_owned(),
                 color: "Default".to_owned(),
             },
             after: None,
@@ -91,9 +108,14 @@ pub fn get_garbage_size(state: &MediaState) -> UiEvent {
     }
 }
 
-pub fn get_tree_change_action_for_mapping_episode(id: ConstMediaId, is_mapped: bool) -> UiEvent {
+pub fn get_tree_change_action_for_mappable(id: MappableMediaId, is_mapped: bool) -> UiEvent {
+    let tree = match &id {
+        MappableMediaId::TvEpisode(_) => Tree::TvShows,
+        MappableMediaId::FilmVideo(_) => Tree::Films,
+    };
+
     UiEvent::ChangeTreeItem {
-        tree: Tree::Media,
+        tree,
         id: id.id().to_owned(),
         change: ChangeColor(if is_mapped {
             "orange".to_owned()
@@ -112,6 +134,19 @@ pub fn get_tree_change_action_for_mapping_file(id: FileBackedTitleId, is_mapped:
         } else {
             "Default".to_owned()
         })
+    }
+}
+
+pub fn get_add_tree_item_for_film(id: String, film_name: String, description: String,) -> UiEvent {
+    UiEvent::AddTreeItem {
+        tree: Tree::Films,
+        item: TreeItem {
+            id,
+            parent_text: film_name,
+            text: description,
+            color: "Default".to_owned(),
+        },
+        after: None
     }
 }
 

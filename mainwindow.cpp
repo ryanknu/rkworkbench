@@ -5,6 +5,7 @@
 #include <QThread>
 #include <QMenu>
 #include <QAction>
+#include <QAudioOutput>
 #include <fstream>
 #include <string>
 #include <format>
@@ -40,6 +41,8 @@ void MainWindow::_addTreeItem(std::string treeName, std::string id, std::string 
     auto tree = ui->showsTree;
     if (treeName == "Files") {
         tree = ui->disksTree;
+    } else if (treeName == "Films") {
+        tree = ui->filmsTree;
     }
 
     // Make item
@@ -69,6 +72,8 @@ void MainWindow::_changeTreeItemColor(std::string treeName, std::string id, std:
     auto tree = ui->showsTree;
     if (treeName == "Files") {
         tree = ui->disksTree;
+    } else if (treeName == "Films") {
+        tree = ui->filmsTree;
     }
 
     auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
@@ -233,17 +238,6 @@ void MainWindow::_queueTasks(std::vector<std::string> cmds)
     }
 }
 
-int MainWindow::_getRequestedPosition() {
-    int pos;
-    try {
-        pos = std::stoi(ui->seekPos->text().toStdString());
-    } catch (...) {
-        pos = 0;
-    }
-
-    return pos;
-}
-
 /**
  * Retrieves the ID of the selected item in the tree.
  * Assumes the ID is set as the UserRole data on item in the data model.
@@ -274,10 +268,13 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     // Initialize tree models
     auto* disksModel = new QStandardItemModel(this);
     auto* showsModel = new QStandardItemModel(this);
+    auto* filmsModel = new QStandardItemModel(this);
     disksModel->setHorizontalHeaderLabels({ "Disks" });
     showsModel->setHorizontalHeaderLabels({ "Shows" });
+    filmsModel->setHorizontalHeaderLabels({ "Films" });
     ui->disksTree->setModel(disksModel);
     ui->showsTree->setModel(showsModel);
+    ui->filmsTree->setModel(filmsModel);
 
     _reflowDisksTree();
     _reflowShowsTree();
@@ -290,15 +287,18 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     // When selecting an entry on the disks tree, load item in player.
     connect(ui->disksTree->selectionModel(), &QItemSelectionModel::selectionChanged, [&](const QItemSelection &, const QItemSelection &) {
         auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
+        auto fileName = get_filename_for_title_id(titleId.c_str());
+        std::string path(fileName);
+        free_string(fileName);
 
-        if (!appModel->hasTitle(titleId)) return;
-        auto title = appModel->titleById(titleId);
+        // Read position from LineEdit
+        try {
+            _mRequestedPlayerPosition = std::stoi(ui->seekPos->text().toStdString());
+        } catch (...) {}
 
-        if (_getRequestedPosition() != 0) {
-            appModel->setRequestedPosition(_getRequestedPosition());
-        }
-
-        player->setSource(QUrl::fromLocalFile(q(title.path().string())));
+        player->stop();
+        player->setSource(QUrl::fromLocalFile(q(path)));
+        player->setPlaybackRate(1.0);
         player->play();
         player->pause();
 });
@@ -310,6 +310,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
     setMouseTrackingRecursive(this, true);
 
+    ui->filmsTree->hide();
+
     // Spin up background thread
     worker = new CommandWorker();
     auto *thread = new QThread();
@@ -318,8 +320,10 @@ MainWindow::MainWindow(QWidget *parent)
     thread->start();
 
     // Connect media player
+    audioOutput = new QAudioOutput;
     player = new QMediaPlayer;
     player->setVideoOutput(ui->videoWidget);
+    player->setAudioOutput(audioOutput);
     connect(player, &QMediaPlayer::durationChanged, [&](int v) {
         ui->videoSeek->setMaximum(v);
     });
@@ -347,7 +351,7 @@ MainWindow::MainWindow(QWidget *parent)
             // of the title, because QMediaPlayer will unload the video upon reaching the end and
             // that can make the experience feel bizarre.
             auto maximum = ui->videoSeek->maximum();
-            auto requested = appModel->requestedPosition();
+            auto requested = _mRequestedPlayerPosition;
             if (requested > maximum - 10000) {
                 requested = maximum - 10000;
             }
@@ -444,6 +448,12 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->tmdbFetchBtn, &QPushButton::clicked, [&]() {
+        auto idEdit = ui->tmdbId->text().toStdString();
+        auto apiKeyEdit = ui->tmdbApiKey->text().toStdString();
+        auto id = idEdit.c_str();
+        auto apiKey = apiKeyEdit.c_str();
+        lookup_film(id, apiKey);
+        return;
         // Check if response is already on disk.
         auto showId = ui->tmdbId->text().toStdString();
         bool isTv = ui->tmdbModeBtn->text() == "TV";
@@ -478,13 +488,29 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(ui->tmdbModeBtn, &QPushButton::clicked, [&]() {
         appModel->toggleTmdbMode();
+        if (appModel->tmdbMode() == "TV") {
+            ui->filmsTree->hide();
+            ui->showsTree->show();
+        } else {
+            ui->filmsTree->show();
+            ui->showsTree->hide();
+        }
         ui->tmdbModeBtn->setText(q(appModel->tmdbMode()));
     });
 
     connect(ui->identifyBtn, &QPushButton::clicked, [&]() {
-        auto to = _getIdForSelectedItemInTree(ui->showsTree);
+        auto isTv = ui->tmdbModeBtn->text() == "TV";
+
+        auto to = isTv
+            ? _getIdForSelectedItemInTree(ui->showsTree)
+            : _getIdForSelectedItemInTree(ui->filmsTree);
+
         auto from = _getIdForSelectedItemInTree(ui->disksTree);
-        map_media(from.c_str(), to.c_str());
+
+        if (isTv)
+            map_tv_episode(from.c_str(), to.c_str());
+        else
+            map_film_video(from.c_str(), to.c_str());
     });
 
     connect(ui->execBtn, &QPushButton::clicked, [&]() {
@@ -603,6 +629,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *event)
         if (treesMask & 1) {
             qDebug() << "Setting showsTree to" << appModel->getCurrentShowsTreeWidth();
             ui->showsTree->setMaximumWidth(appModel->getCurrentShowsTreeWidth());
+            ui->filmsTree->setMaximumWidth(appModel->getCurrentShowsTreeWidth());
         }
         if (treesMask & 2) {
             qDebug() << "Setting disksTree to" << appModel->getCurrentDisksTreeWidth();
