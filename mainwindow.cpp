@@ -452,37 +452,11 @@ MainWindow::MainWindow(QWidget *parent)
         auto apiKeyEdit = ui->tmdbApiKey->text().toStdString();
         auto id = idEdit.c_str();
         auto apiKey = apiKeyEdit.c_str();
-        lookup_film(id, apiKey);
-        return;
-        // Check if response is already on disk.
-        auto showId = ui->tmdbId->text().toStdString();
-        bool isTv = ui->tmdbModeBtn->text() == "TV";
-        auto subdir = isTv ? appModel->tvDirectory() : appModel->filmDirectory();
-        std::ifstream t(subdir / (ui->tmdbId->text().toStdString() + ".json"));
-        std::stringstream buffer;
-        buffer << t.rdbuf();
-        auto json = buffer.str();
-        if (json.length() > 0) {
-            qDebug() << "Data from file: " << json;
-            return;
-        }
 
-        // Save the API key
-        appModel->setTmdbApiKey(ui->tmdbApiKey->text().toStdString());
-
-        // Make the cmd
-        auto cmd = std::format(
-            "curl https://api.themoviedb.org/3/{}/{} --header \"Authorization: bearer {}\" -o {}/{}.json",
-            isTv ? "tv" : "movie",
-            ui->tmdbId->text().toStdString(),
-            ui->tmdbApiKey->text().toStdString(),
-            subdir.string(),
-            ui->tmdbId->text().toStdString()
-        );
-
-        _queueTask(cmd);
-        if (isTv) {
-            _queueTask(format("_scanFsForShow {}", showId));
+        if (ui->tmdbModeBtn->text() == "TV") {
+            lookup_tv(id, apiKey);
+        } else {
+            lookup_film(id, apiKey);
         }
     });
 

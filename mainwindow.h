@@ -67,6 +67,7 @@ extern "C" {
 	// Commands that the worker thread can work.
 	void initial_load();
 	void lookup_film(const char* id, const char* api_key);
+	void lookup_tv(const char* id, const char* api_key);
 	void map_tv_episode(const char* from, const char* to);
 	void map_film_video(const char* from, const char* to);
 }

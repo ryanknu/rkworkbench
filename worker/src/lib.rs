@@ -83,6 +83,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 PerformInitialLoad => requests::read_local_media(&MEDIA),
                 MapMedia(from, to) => requests::map_media(&MEDIA, from, to),
                 LookupFilm(tmdb_id, tmdb_api_key) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key),
+                LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
             };
 
             // It'd be nice to send batches of up to ~20 messages in a JSON array.
@@ -136,6 +137,22 @@ pub extern "C" fn lookup_film(tmdb_id: *const c_char, tmdb_api_key: *const c_cha
     };
 
     SENDER.get().map(|s| s.lock().unwrap().send(LookupFilm(tmdb_id, tmdb_api_key)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn lookup_tv(tmdb_id: *const c_char, tmdb_api_key: *const c_char) {
+    println!("[rust] lookup_tv called");
+
+    let tmdb_id = cstr(tmdb_id);
+    let tmdb_api_key = cstr(tmdb_api_key);
+
+    let tmdb_api_key = if tmdb_api_key.is_empty() {
+        None
+    } else {
+        Some(tmdb_api_key)
+    };
+
+    SENDER.get().map(|s| s.lock().unwrap().send(LookupTv(tmdb_id, tmdb_api_key)));
 }
 
 /// Returns the filename for a given id.

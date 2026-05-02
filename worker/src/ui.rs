@@ -150,6 +150,19 @@ pub fn get_add_tree_item_for_film(id: String, film_name: String, description: St
     }
 }
 
+pub fn get_add_tree_item_for_tv_show(id: String, show_name: String, description: String,) -> UiEvent {
+    UiEvent::AddTreeItem {
+        tree: Tree::TvShows,
+        item: TreeItem {
+            id,
+            parent_text: show_name,
+            text: description,
+            color: "Default".to_owned(),
+        },
+        after: None
+    }
+}
+
 pub fn get_tmdb_key_event() -> UiEvent {
     UiEvent::RecalledConfirmedTmdbApiKey
 }

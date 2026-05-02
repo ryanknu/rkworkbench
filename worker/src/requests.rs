@@ -1,6 +1,6 @@
-use crate::media::{MappableMediaId, FileBackedTitleId, Film, MediaId};
-use crate::tmdb::{TmdbFilmVideos, TmdbItem};
-use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, UiEvent};
+use crate::media::{MappableMediaId, FileBackedTitleId, Film, MediaId, TvShow, TvShowEpisode};
+use crate::tmdb::{TmdbFilmVideos, TmdbItem, TmdbTvShow, TmdbTvShowSeason};
+use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, UiEvent};
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, OnceLock};
 use crate::convert::{FilmVideoBuilder, TvShowEpisodeBuilder};
@@ -10,6 +10,7 @@ type MediaState = OnceLock<Mutex<crate::media::MediaState>>;
 #[derive(Clone, Serialize, Deserialize)]
 pub enum IncomingRequest {
     LookupFilm(String, Option<String>),
+    LookupTv(String, Option<String>),
     MapMedia(FileBackedTitleId, MappableMediaId),
     PerformInitialLoad,
 }
@@ -163,5 +164,49 @@ pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Str
         videos.results.into_iter().map(|video| get_add_tree_item_for_film(video.id, film.film_key.clone(), format!("{} - {}", video.r#type, video.name)))
     );
     
+    results
+}
+
+pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<String>) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+
+    if tmdb_api_key.is_none() && !media.has_confirmed_tmdb_api_key() {
+        println!("No API key found, aborting TV lookup");
+        return vec![];
+    }
+
+    let tmdb_api_key = tmdb_api_key.as_ref();
+    let api_key = tmdb_api_key.map(|s| &s[..]).unwrap_or_else(|| media.get_tmdb_api_key());
+
+    let Ok((show_json, seasons_json)) = media.tmdb().query_tv(api_key, &tmdb_id) else {
+        println!("Error querying TMDB for TV show: {}", tmdb_id);
+        return vec![];
+    };
+
+    let show: TmdbTvShow = serde_json::from_slice(&show_json).unwrap();
+    let show: TvShow = show.into();
+    media.push_tv_show(show.clone());
+
+    let mut results = Vec::new();
+
+    for season_json in seasons_json {
+        let season: TmdbTvShowSeason = serde_json::from_slice(&season_json).unwrap();
+        if season.episodes.is_empty() { continue; }
+
+        let episodes: Vec<TvShowEpisode> = season.episodes.into_iter().map(|v| {
+            let builder = TvShowEpisodeBuilder::from(v);
+            builder.build_with_show(&show)
+        }).collect();
+
+        for episode in &episodes {
+            results.push(get_add_tree_item_for_tv_show(
+                episode.id.0.to_string(),
+                show.show_key.clone(),
+                format!("{} - {}", episode.series_key, episode.name)
+            ));
+        }
+        media.push_tv_show_episodes(episodes);
+    }
+
     results
 }
