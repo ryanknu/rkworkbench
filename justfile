@@ -16,7 +16,7 @@ build:
     {{MOC}} commandworker.h > moc_commandworker.cpp
     {{UIC}} mainwindow.ui > ui_mainwindow.h
     cargo build --release --manifest-path=worker/Cargo.toml
-    g++ *.cpp {{LIBS}} {{CFLAGS}} {{RUST_LIB}} {{DBG_OPTS}} -o {{EXE}}
+    g++ *.cpp {{LIBS}} {{CFLAGS}} {{RUST_LIB}} {{OPTIONS}} -o {{EXE}}
 
 install:
     @if [ ! -f {{EXE}} ]; then \

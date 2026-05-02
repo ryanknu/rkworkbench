@@ -74,4 +74,7 @@ extern "C" {
 	void rsync_show(const char* show_id);
 	void map_tv_episode(const char* from, const char* to);
 	void map_film_video(const char* from, const char* to);
+	void confirm_tv_episode_plays(const char* id);
+	void confirm_film_video_plays(const char* id);
+	void unidentify_tv_episode(const char* id);
 }

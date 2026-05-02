@@ -86,6 +86,10 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
                 RenameIdentified => requests::rename_identified(&MEDIA),
                 RsyncRequest(id) => requests::rsync_show(&MEDIA, id),
+                ConfirmPlay(id) => requests::confirm_play(&MEDIA, id),
+                DeleteTvShow(id) => requests::delete_tv_show(&MEDIA, id),
+                DeleteTvSeason(id, season) => requests::delete_tv_season(&MEDIA, id, season),
+                Unidentify(id) => requests::unidentify_tv_episode(&MEDIA, id),
             };
 
             // It'd be nice to send batches of up to ~20 messages in a JSON array.
@@ -171,6 +175,51 @@ pub extern "C" fn rsync_show(show_id: *const c_char) {
     let show_id = cstr(show_id);
 
     SENDER.get().map(|s| s.lock().unwrap().send(RsyncRequest(show_id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn confirm_tv_episode_plays(id: *const c_char) {
+    println!("[rust] confirm_tv_episode_plays called");
+
+    let id = MappableMediaId::TvEpisode(TvEpisodeId(cstr(id)));
+
+    SENDER.get().map(|s| s.lock().unwrap().send(ConfirmPlay(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn confirm_film_video_plays(id: *const c_char) {
+    println!("[rust] confirm_film_video_plays called");
+
+    let id = MappableMediaId::FilmVideo(FilmVideoId(cstr(id)));
+
+    SENDER.get().map(|s| s.lock().unwrap().send(ConfirmPlay(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn delete_tv_show(show_id: *const c_char) {
+    println!("[rust] delete_tv_show called");
+
+    let show_id = cstr(show_id);
+
+    SENDER.get().map(|s| s.lock().unwrap().send(DeleteTvShow(show_id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn delete_tv_season(show_id: *const c_char, season_number: usize) {
+    println!("[rust] delete_tv_season called");
+
+    let show_id = cstr(show_id);
+
+    SENDER.get().map(|s| s.lock().unwrap().send(DeleteTvSeason(show_id, season_number)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn unidentify_tv_episode(id: *const c_char) {
+    println!("[rust] unidentify_tv_episode called");
+
+    let id = TvEpisodeId(cstr(id));
+
+    SENDER.get().map(|s| s.lock().unwrap().send(Unidentify(id)));
 }
 
 /// Returns the filename for a given id.

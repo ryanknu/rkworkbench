@@ -1,6 +1,6 @@
-use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, MediaId, TvShow, TvShowEpisode, TvShowId};
+use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, MediaId, TvShow, TvShowEpisode, TvShowId, TvEpisodeId};
 use crate::tmdb::{TmdbItem, TmdbTvShow, TmdbTvShowSeason};
-use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, Tree, UiEvent};
+use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, Tree, TreeItem, UiEvent};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use std::fs;
@@ -18,6 +18,10 @@ pub enum IncomingRequest {
     PerformInitialLoad,
     RenameIdentified,
     RsyncRequest(String),
+    ConfirmPlay(MappableMediaId),
+    DeleteTvShow(String),
+    DeleteTvSeason(String, usize),
+    Unidentify(TvEpisodeId),
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -86,6 +90,8 @@ fn add_to_library(media: &crate::media::MediaState, item: TmdbItem) -> Option<Tm
 
 pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
     let media = unlock_media!(media);
+
+    media.load_confirmed_plays();
 
     // This should be moved.
     media.read_local_media();
@@ -357,4 +363,103 @@ pub fn rsync_show(media: &MediaState, id: String) -> Vec<UiEvent> {
     }
 
     vec![]
+}
+
+pub fn confirm_play(media: &MediaState, id: MappableMediaId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+
+    let path_to_confirm = media.get_title_id_for_mappable(&id).and_then(|tid| {
+        let titles = media.file_backed_titles.borrow();
+        titles.iter().find(|t| t.id == tid).map(|t| t.path.clone())
+    });
+
+    if let Some(path) = path_to_confirm {
+        media.add_confirmed_play(path);
+        vec![get_garbage_size(&media)]
+    } else {
+        println!("Failed to find file to confirm play for {:?}", id.id());
+        vec![]
+    }
+}
+
+pub fn delete_tv_show(media: &MediaState, id: String) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let id = if id.starts_with("show.") { id[5..].to_owned() } else { id };
+    media.delete_tv_show(&TvShowId(id));
+    vec![]
+}
+
+pub fn delete_tv_season(media: &MediaState, id: String, season: usize) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let id = if id.starts_with("show.") { id[5..].to_owned() } else { id };
+    media.delete_tv_season(&TvShowId(id), season);
+    vec![]
+}
+
+pub fn unidentify_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut events = Vec::new();
+
+    let mut info = None;
+    {
+        let mappable_id = MappableMediaId::TvEpisode(id.clone());
+        if let Some(title_id) = media.get_title_id_for_mappable(&mappable_id) {
+            let episodes = media.tv_show_episodes.borrow();
+            if let Some(episode) = episodes.iter().find(|e| e.id == id) {
+                let titles = media.file_backed_titles.borrow();
+                if let Some(title) = titles.iter().find(|t| t.id == title_id) {
+                    info = Some((title.id.clone(), title.path.clone(), episode.show_name.clone(), episode.series_key.clone()));
+                }
+            }
+        }
+    }
+
+    if let Some((title_id, source_path, show_name, series_key)) = info {
+        let dest_folder = media.media_dir.join("output").join("Lost & Found");
+        if let Err(e) = fs::create_dir_all(&dest_folder) {
+            println!("Error creating directory {:?}: {:?}", dest_folder, e);
+            return vec![];
+        }
+
+        let dest_file_name = format!("{} - {}.mkv", show_name, series_key);
+        let dest_path = dest_folder.join(dest_file_name);
+
+        println!("Moving {:?} to {:?}", source_path, dest_path);
+        if let Err(e) = fs::rename(&source_path, &dest_path) {
+            println!("Error moving file {:?} to {:?}: {:?}", source_path, dest_path, e);
+            return vec![];
+        }
+
+        // Update state
+        if let Some(title) = media.file_backed_titles.borrow_mut().iter_mut().find(|t| t.id == title_id) {
+            title.path = dest_path;
+            title.mapped_media = None;
+            title.collection = "Lost & Found".to_owned();
+            title.file_name = format!("{} - {}.mkv", show_name, series_key);
+        }
+
+        // UI events
+        events.push(UiEvent::RemoveTreeItemById {
+            tree: Tree::TvShows,
+            id: id.0.clone(),
+        });
+
+        if let Some(title) = media.file_backed_titles.borrow().iter().find(|t| t.id == title_id) {
+             let confirmed = media.confirmed_plays.borrow();
+             events.push(UiEvent::AddTreeItem {
+                tree: Tree::Files,
+                item: TreeItem {
+                    id: title.id.0.clone(),
+                    parent_id: None,
+                    parent_text: title.collection.clone(),
+                    text: title.file_name.clone(),
+                    color: if title.marked_for_deletion(&confirmed) { "red".to_owned() } else { "Default".to_owned() },
+                },
+                after: None,
+            });
+        }
+    }
+
+    events.push(get_garbage_size(&media));
+    events
 }

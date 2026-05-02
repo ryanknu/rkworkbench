@@ -1,7 +1,9 @@
 use std::cell::{Ref, RefCell};
 use std::cmp::PartialEq;
+use std::collections::HashSet;
 use std::env::home_dir;
 use std::fmt::Debug;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use serde::{Deserialize, Serialize};
@@ -19,6 +21,7 @@ pub struct MediaState {
     pub(crate) film_videos: RefCell<Vec<FilmVideo>>,
     pub(crate) tv_shows: RefCell<Vec<TvShow>>,
     pub(crate) tv_show_episodes: RefCell<Vec<TvShowEpisode>>,
+    pub(crate) confirmed_plays: RefCell<HashSet<PathBuf>>,
 }
 
 impl Debug for MediaState {
@@ -91,6 +94,36 @@ impl MediaState {
             film_videos: Default::default(),
             tv_shows: Default::default(),
             tv_show_episodes: Default::default(),
+            confirmed_plays: Default::default(),
+        }
+    }
+
+    pub fn load_confirmed_plays(&self) {
+        let plays_file = self.config_dir.join("plays.txt");
+        if plays_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(&plays_file) {
+                let mut confirmed = self.confirmed_plays.borrow_mut();
+                for line in content.lines() {
+                    let path = PathBuf::from(line.trim());
+                    if !path.as_os_str().is_empty() {
+                        confirmed.insert(path);
+                    }
+                }
+            }
+        }
+    }
+
+    pub fn add_confirmed_play(&self, path: PathBuf) {
+        let plays_file = self.config_dir.join("plays.txt");
+        let mut confirmed = self.confirmed_plays.borrow_mut();
+        if confirmed.insert(path.clone()) {
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(plays_file)
+            {
+                let _ = writeln!(file, "{}", path.to_string_lossy());
+            }
         }
     }
 }
@@ -326,10 +359,14 @@ impl MediaState {
 
     pub fn get_on_disk_file_size(&self, id: &MappableMediaId) -> Option<u64> {
         let titles = self.file_backed_titles.borrow();
+        self.get_title_id_for_mappable(id).and_then(|tid| {
+            titles.iter().find(|t| t.id == tid && self.is_in_output_dir(&t.path)).map(|t| t.file_size)
+        })
+    }
+
+    pub fn get_title_id_for_mappable(&self, id: &MappableMediaId) -> Option<FileBackedTitleId> {
+        let titles = self.file_backed_titles.borrow();
         titles.iter().find(|title| {
-            if !self.is_in_output_dir(&title.path) {
-                return false;
-            }
             match &title.mapped_media {
                 Some(MediaId::TvEpisode(eid)) => {
                     if let MappableMediaId::TvEpisode(id) = id {
@@ -366,7 +403,7 @@ impl MediaState {
                 _ => {}
             }
             false
-        }).map(|title| title.file_size)
+        }).map(|title| title.id.clone())
     }
 
     pub fn get_mappable_text(&self, id: &MappableMediaId) -> Option<String> {
@@ -389,23 +426,7 @@ impl MediaState {
     }
 
     pub fn is_mapped_to_file(&self, id: &MappableMediaId) -> bool {
-        let titles = self.file_backed_titles.borrow();
-        titles.iter().any(|title| {
-            match &title.mapped_media {
-                Some(MediaId::TvEpisode(eid)) => {
-                    if let MappableMediaId::TvEpisode(id) = id {
-                        return eid == id;
-                    }
-                }
-                Some(MediaId::FilmVideo(fid)) => {
-                    if let MappableMediaId::FilmVideo(id) = id {
-                        return fid == id;
-                    }
-                }
-                _ => {}
-            }
-            false
-        })
+        self.get_title_id_for_mappable(id).is_some()
     }
 
     pub fn has_confirmed_tmdb_api_key(&self) -> bool {
@@ -474,6 +495,39 @@ impl MediaState {
         let mut tv_show_episodes = self.tv_show_episodes.borrow_mut();
         tv_show_episodes.sort_by_key(|episode| format!("{}{}", episode.show_name, episode.series_key));
     }
+
+    pub fn delete_tv_show(&self, show_id: &TvShowId) {
+        let tmdb_id = &show_id.0;
+        let show_file = self.config_dir.join("tv").join(format!("{tmdb_id}.json"));
+        if show_file.exists() {
+            let _ = std::fs::remove_file(show_file);
+        }
+
+        // Delete all seasons
+        if let Ok(entries) = std::fs::read_dir(self.config_dir.join("tv")) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let filename = entry.file_name().to_string_lossy().into_owned();
+                if filename.starts_with(&format!("{}-S", tmdb_id)) && filename.ends_with(".json") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+
+        // Remove from memory
+        self.tv_shows.borrow_mut().retain(|s| s.id != *show_id);
+        self.tv_show_episodes.borrow_mut().retain(|e| e.show_id != *show_id);
+    }
+
+    pub fn delete_tv_season(&self, show_id: &TvShowId, season_number: usize) {
+        let tmdb_id = &show_id.0;
+        let season_file = self.config_dir.join("tv").join(format!("{}-S{}.json", tmdb_id, season_number));
+        if season_file.exists() {
+            let _ = std::fs::remove_file(season_file);
+        }
+
+        // Remove from memory
+        self.tv_show_episodes.borrow_mut().retain(|e| !(e.show_id == *show_id && e.season_number == season_number));
+    }
 }
 
 impl FileBackedTitle {
@@ -493,8 +547,8 @@ impl FileBackedTitle {
         self.file_size
     }
 
-    pub fn marked_for_deletion(&self) -> bool {
-        self.file_name.contains(".d")
+    pub fn marked_for_deletion(&self, confirmed_plays: &HashSet<PathBuf>) -> bool {
+        self.file_name.contains(".d") || confirmed_plays.contains(&self.path)
     }
 
     pub fn is_mapped(&self) -> bool {

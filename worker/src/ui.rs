@@ -11,12 +11,12 @@ pub enum Tree {
 }
 
 #[derive(Serialize)]
-pub struct TreeItem {
-    id: String,
-    parent_id: Option<String>,
-    parent_text: String,
-    text: String,
-    color: String,
+pub(crate) struct TreeItem {
+    pub(crate) id: String,
+    pub(crate) parent_id: Option<String>,
+    pub(crate) parent_text: String,
+    pub(crate) text: String,
+    pub(crate) color: String,
 }
 
 #[derive(Serialize)]
@@ -58,6 +58,7 @@ enum Mode {
 /// The files tree is a 2-layer tree view that shows disks > titles, e.g. Rush Hour 2 > JB1_t00.
 /// Mapped media shouldn't appear in the media tree but rather a colored entry on the media tree.
 pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
+    let confirmed = state.confirmed_plays.borrow();
     state.file_backed_titles().iter().filter(|n| !n.is_mapped()).map(|file|
         UiEvent::AddTreeItem {
             tree: Tree::Files,
@@ -66,7 +67,7 @@ pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
                 parent_id: None,
                 parent_text: file.collection().to_owned(),
                 text: file.name().to_owned(),
-                color: if file.marked_for_deletion() { "red".to_owned() } else { "Default".to_owned() },
+                color: if file.marked_for_deletion(&confirmed) { "red".to_owned() } else { "Default".to_owned() },
             },
             after: None,
         }
@@ -133,8 +134,11 @@ pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
 }
 
 pub fn get_garbage_size(state: &MediaState) -> UiEvent {
+    let confirmed = state.confirmed_plays.borrow();
     UiEvent::ChangeGarbageSize {
-        size: state.file_backed_titles().iter().fold(0u64, |t, a| t + a.size())
+        size: state.file_backed_titles().iter()
+            .filter(|t| t.marked_for_deletion(&confirmed))
+            .fold(0u64, |t, a| t + a.size())
     }
 }
 

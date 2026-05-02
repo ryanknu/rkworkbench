@@ -28,9 +28,11 @@ signals:
     void reflowShowsTree();
     void reflowGcButton();
     void removeLocalSeason(std::string showId, int seasonNumber);
+    void removeLocalShow(std::string showId);
     void scanFilesystemForShow(int showId);
     void scanLocalTitles();
     void scanLocalEpisodes();
+    void clearTrees();
     void scanLocalTmdbData(std::string filter);
 
 private:

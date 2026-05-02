@@ -1,5 +1,10 @@
 #include "commandworker.h"
 #include <filesystem>
+#include <sstream>
+
+extern "C" void initial_load();
+extern "C" void delete_tv_show(const char* show_id);
+extern "C" void delete_tv_season(const char* show_id, size_t season_number);
 
 namespace fs = std::filesystem;
 
@@ -52,10 +57,27 @@ void CommandWorker::processQueue()
             } else {
                 qDebug() << "Invalid arguments for" << cmd;
             }
+        } else if (cmd.starts_with("_removeLocalShow ")) {
+            emit removeLocalShow(cmd.substr(17));
+        } else if (cmd.starts_with("_deleteTvShow ")) {
+            delete_tv_show(cmd.substr(14).c_str());
+        } else if (cmd.starts_with("_deleteTvSeason ")) {
+            std::istringstream iss(cmd.substr(16));
+            std::string showId;
+            int seasonNumber;
+            if (iss >> showId >> seasonNumber) {
+                delete_tv_season(showId.c_str(), seasonNumber);
+            } else {
+                qDebug() << "Invalid arguments for" << cmd;
+            }
         } else if (cmd == "_scanLocalTitles") {
             emit scanLocalTitles();
         } else if (cmd == "_scanLocalEpisodes") {
             emit scanLocalEpisodes();
+        } else if (cmd == "_clearTrees") {
+            emit clearTrees();
+        } else if (cmd == "_initialLoad") {
+            initial_load();
         } else if (cmd.starts_with("_scanLocalTmdbData ")) {
             emit scanLocalTmdbData(cmd.substr(19));
         } else if (cmd.starts_with("_scanFsForShow ")) {

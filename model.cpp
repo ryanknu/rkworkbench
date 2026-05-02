@@ -2,6 +2,7 @@
 #include <filesystem>
 #include <fstream>
 #include <algorithm>
+#include <set>
 #include <QDebug>
 #include <nlohmann/json.hpp>
 #include <regex>
@@ -275,9 +276,24 @@ void AppModel::scanLocalTmdbData(const std::string& filter)
 }
 
 void AppModel::removeLocalSeason(std::string showId, int seasonNumber) {
+    if (_mShows.contains(showId)) {
+        auto& show = *_mShows[showId];
+        show.seasons.erase(std::remove(show.seasons.begin(), show.seasons.end(), seasonNumber), show.seasons.end());
+    }
     // TODO: Don't allow this if local media would be orphaned.
     for (auto el = _mEpisodes.begin(); el != _mEpisodes.end();) {
         if (el->second->showId == showId && el->second->season == seasonNumber) {
+            el = _mEpisodes.erase(el);
+        } else {
+            ++el;
+        }
+    }
+}
+
+void AppModel::removeLocalShow(const std::string& showId) {
+    _mShows.erase(showId);
+    for (auto el = _mEpisodes.begin(); el != _mEpisodes.end();) {
+        if (el->second->showId == showId) {
             el = _mEpisodes.erase(el);
         } else {
             ++el;
@@ -290,6 +306,7 @@ void AppModel::removeLocalSeason(std::string showId, int seasonNumber) {
 */
 void AppModel::scanLocalTitles()
 {
+    reloadConfirmedPlays();
     _mTitles.clear();
 
     for (const auto& entry : fs::directory_iterator(_mWorkingDirPath)) {
@@ -314,7 +331,24 @@ void AppModel::scanLocalTitles()
                 entry.path().filename().string()
             );
 
+            auto pathStr = entry.path().string();
+            if (std::find(_mConfirmedPlayPaths.begin(), _mConfirmedPlayPaths.end(), pathStr) != _mConfirmedPlayPaths.end()) {
+                title->setConfirmed(true);
+            }
+
             _mTitles.emplace(title->id, std::move(title));
+        }
+    }
+}
+
+void AppModel::reloadConfirmedPlays()
+{
+    _mConfirmedPlayPaths.clear();
+    std::ifstream file(_mConfigDirPath / "plays.txt");
+    std::string line;
+    while (std::getline(file, line)) {
+        if (!line.empty()) {
+            _mConfirmedPlayPaths.push_back(line);
         }
     }
 }
@@ -443,9 +477,13 @@ bool AppModel::isIdentified(const std::string& item) const {
 }
 
 void AppModel::confirmPlays(const std::string& episodeId) {
-    if (isIdentified(episodeId)) return;
-    _mConfirmedEpisodes.push_back(episodeId);
-    // TODO: Write to disk, and read from disk.
+    for (const auto& pair : _mIdentifiedEpisodes) {
+        if (pair.second == episodeId) {
+            if (hasTitle(pair.first)) {
+                titleById(pair.first).setConfirmed(true);
+            }
+        }
+    }
 }
 
 bool AppModel::isConfirmedPlays(const std::string& episodeId) const {
@@ -569,7 +607,8 @@ std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(const std::st
         cmd,
         // And update the UI
         "_scanLocalTitles",
-        "_reflowDisksTree"
+        "_clearTrees",
+        "_initialLoad"
     };
 }
 
@@ -584,10 +623,26 @@ std::vector<std::string> AppModel::getCommandsToDeleteSeason(const std::string& 
     }
 
     auto episode = episodeById(episodeId);
-    auto fileName = episode.seasonPath;
     return {
-        std::format("_rm {}", fileName.string()),
+        std::format("_deleteTvSeason {} {}", episode.showId, episode.season),
         std::format("_removeLocalSeason {} {}", episode.showId, episode.season),
+        "_scanLocalTmdbData *",
+        "_clearTrees",
+        "_initialLoad"
+    };
+}
+
+std::vector<std::string> AppModel::getCommandsToDeleteShow(const std::string& showId) {
+    if (!hasShow(showId)) {
+        return { };
+    }
+
+    return {
+        std::format("_deleteTvShow {}", showId),
+        std::format("_removeLocalShow {}", showId),
+        "_scanLocalTmdbData *",
+        "_clearTrees",
+        "_initialLoad"
     };
 }
 
@@ -612,7 +667,8 @@ std::vector<std::string> AppModel::getCommandsToUnDeleteFileForTitle(const std::
         cmd,
         // And update the UI
         "_scanLocalTitles",
-        "_reflowDisksTree",
+        "_clearTrees",
+        "_initialLoad",
         "_reflowGcButton"
     };
 }
@@ -639,6 +695,7 @@ std::vector<std::string> AppModel::getCommandsToUploadEntireShow(const std::stri
 
 std::vector<std::string> AppModel::getCommandsToCollectGarbage()
 {
+    scanLocalTitles();
     std::vector<std::string> ret;
     for (auto& title : titles()) {
         if (title->isDeleted()) {
@@ -650,7 +707,8 @@ std::vector<std::string> AppModel::getCommandsToCollectGarbage()
 
     if (!ret.empty()) {
         ret.emplace_back("_scanLocalTitles");
-        ret.emplace_back("_reflowAll");
+        ret.emplace_back("_clearTrees");
+        ret.emplace_back("_initialLoad");
     }
 
     return ret;
@@ -665,8 +723,12 @@ void AppModel::setRequestedPosition(int position)
     _mRequestedPosition = position;
 }
 
-bool RippedTitle::isDeleted() {
-    return _mPath.string().ends_with(".d");
+void RippedTitle::setConfirmed(bool confirmed) {
+    _mIsConfirmed = confirmed;
+}
+
+bool RippedTitle::isDeleted() const {
+    return _mPath.string().ends_with(".d") || _mIsConfirmed;
 }
 
 Show& AppModel::showById(const std::string& id) {

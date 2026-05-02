@@ -31,6 +31,7 @@ public:
     std::vector<Episode*> episodes(); // These are likely to be immediately sorted, so, letting the caller
     // own the reference is ideal.
     std::vector<RippedTitle*> titles();
+    void reloadConfirmedPlays();
     bool hasShow(const std::string& id);
     bool hasEpisode(const std::string& id);
     bool hasTitle(const std::string& id);
@@ -46,11 +47,13 @@ public:
     int queuedAndPendingJobs();
     void scanLocalTmdbData(const std::string& filter);
     void removeLocalSeason(std::string showId, int seasonNumber);
+    void removeLocalShow(const std::string& showId);
     void scanLocalTitles();
     void scanLocalEpisodes();
     bool showHasLocalFile(std::string showName, std::string seasonKey);
     std::vector<std::string> getCommandsToDeleteFileForTitle(const std::string& titleId);
     std::vector<std::string> getCommandsToDeleteSeason(const std::string& episodeId);
+    std::vector<std::string> getCommandsToDeleteShow(const std::string& showId);
     std::vector<std::string> getCommandsToUnDeleteFileForTitle(const std::string& titleId);
     std::vector<std::string> getCommandsToUploadEntireShow(const std::string& showId);
     std::vector<std::string> getCommandsToCollectGarbage();
@@ -83,6 +86,7 @@ private:
     std::unordered_map<std::string, std::filesystem::path> _mLocalEpisodes;
     std::unordered_map<std::string, std::string> _mIdentifiedEpisodes;
     std::vector<std::string> _mConfirmedEpisodes;
+    std::vector<std::string> _mConfirmedPlayPaths;
 
     // Configurations
     std::filesystem::path _mHomeDirPath;
@@ -121,7 +125,8 @@ public:
     std::string friendlyTitle();
     std::filesystem::path path();
     [[nodiscard]] std::uintmax_t size() const;
-    bool isDeleted();
+    void setConfirmed(bool confirmed);
+    bool isDeleted() const;
     bool operator<(const RippedTitle& other) const;
 
 private:
@@ -129,6 +134,7 @@ private:
     std::uintmax_t _mSize;
     std::string _mDiskName;
     std::string _mTitleName;
+    bool _mIsConfirmed = false;
     static std::atomic<std::uint64_t> _mIdSequence;
 };
 

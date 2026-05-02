@@ -140,7 +140,8 @@ void MainWindow::_changeTreeItemText(std::string treeName, std::string id, std::
 }
 
 void MainWindow::_changeGarbageSize(std::uint64_t size) {
-    ui->gcBtn->setText(q(std::format("Collect Garbage ({})", size)));
+    double gb = static_cast<double>(size) / (1024.0 * 1024.0 * 1024.0);
+    ui->gcBtn->setText(q(std::format("Collect Garbage ({:.1f}G)", gb)));
     ui->gcBtn->setDisabled(size < 1);
 }
 
@@ -474,6 +475,14 @@ MainWindow::MainWindow(QWidget *parent)
         QMenu menu;
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
 
+        if (episodeId.empty()) {
+            auto deleteMenu = menu.addMenu(q("Delete Stuff"));
+            auto deleteShow = deleteMenu->addAction(q("Delete Show"));
+            connect(deleteShow, &QAction::triggered, [this, showId]() {
+                _queueTasks(appModel->getCommandsToDeleteShow(showId));
+            });
+        }
+
         if (!episodeId.empty()) {
             QString episodeText = index.data(Qt::DisplayRole).toString();
             QString seasonText = "Season";
@@ -481,11 +490,16 @@ MainWindow::MainWindow(QWidget *parent)
                 seasonText = "Season " + episodeText.mid(1, 2);
             }
 
-            auto confirmAction = menu.addAction(q("Confirm Plays (not implemented)"));
+            auto confirmAction = menu.addAction(q("Confirm Plays"));
+            auto unidentifyAction = menu.addAction(q("Unidentify"));
 
             auto deleteMenu = menu.addMenu(q("Delete Stuff"));
-            deleteMenu->addAction(q("Delete Show (not implemented)"));
+            auto deleteShow = deleteMenu->addAction(q("Delete Show"));
             auto deleteSeason = deleteMenu->addAction(q(std::format("Delete {}", seasonText.toStdString())));
+
+            connect(deleteShow, &QAction::triggered, [this, showId]() {
+                _queueTasks(appModel->getCommandsToDeleteShow(showId));
+            });
 
             connect(deleteSeason, &QAction::triggered, [this, episodeId]() {
                 std::string appModelId = episodeId;
@@ -499,7 +513,12 @@ MainWindow::MainWindow(QWidget *parent)
                 std::string appModelId = episodeId;
                 if (!appModelId.starts_with("ep.")) appModelId = "ep." + appModelId;
                 appModel->confirmPlays(appModelId);
-                _reflowShowsTree();
+                confirm_tv_episode_plays(episodeId.c_str());
+                _reflowGcButton();
+            });
+
+            connect(unidentifyAction, &QAction::triggered, [episodeId]() {
+                unidentify_tv_episode(episodeId.c_str());
             });
         }
 
@@ -533,6 +552,19 @@ MainWindow::MainWindow(QWidget *parent)
 
         QMenu menu;
         QAction * uploadAction = menu.addAction(q("Upload Film (rsync)"));
+
+        std::string filmVideoId;
+        if (index.parent().isValid()) {
+            filmVideoId = id;
+        }
+
+        if (!filmVideoId.empty()) {
+            auto confirmAction = menu.addAction(q("Confirm Plays"));
+            connect(confirmAction, &QAction::triggered, [filmVideoId]() {
+                confirm_film_video_plays(filmVideoId.c_str());
+            });
+        }
+
         connect(uploadAction, &QAction::triggered, [filmId]() {
             rsync_show(filmId.c_str());
         });
@@ -630,6 +662,12 @@ MainWindow::MainWindow(QWidget *parent)
         _reflowShowsTree();
     }, Qt::QueuedConnection);
 
+    connect(worker, &CommandWorker::clearTrees, this, [&]() {
+        ui->disksTree->model()->removeRows(0, ui->disksTree->model()->rowCount());
+        ui->showsTree->model()->removeRows(0, ui->showsTree->model()->rowCount());
+        ui->filmsTree->model()->removeRows(0, ui->filmsTree->model()->rowCount());
+    }, Qt::QueuedConnection);
+
     connect(worker, &CommandWorker::scanLocalTmdbData, this, [&]() {
         appModel->scanLocalTmdbData("*");
         _reflowShowsTree();
@@ -637,6 +675,11 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(worker, &CommandWorker::removeLocalSeason, this, [&](std::string showId, int seasonNumber) {
         appModel->removeLocalSeason(showId, seasonNumber);
+        _reflowShowsTree();
+    }, Qt::QueuedConnection);
+
+    connect(worker, &CommandWorker::removeLocalShow, this, [&](std::string showId) {
+        appModel->removeLocalShow(showId);
         _reflowShowsTree();
     }, Qt::QueuedConnection);
 
