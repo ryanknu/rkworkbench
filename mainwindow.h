@@ -29,9 +29,10 @@ public:
 	Q_INVOKABLE
 	void processMessage(std::string message);
 
-	void _addTreeItem(std::string tree, std::string id, std::string parentText, std::string text, std::string color, std::string after);
+	void _addTreeItem(std::string tree, std::string id, std::string parentId, std::string parentText, std::string text, std::string color, std::string after);
 	void _removeTreeItemById(std::string tree, std::string id);
 	void _changeTreeItemColor(std::string tree, std::string id, std::string color);
+	void _changeTreeItemText(std::string tree, std::string id, std::string text);
 	void _changeGarbageSize(std::uint64_t size);
 	void _hideTmdbApiKeyInput();
 
@@ -70,6 +71,7 @@ extern "C" {
 	void lookup_film(const char* id, const char* api_key);
 	void lookup_tv(const char* id, const char* api_key);
 	void rename_identified();
+	void rsync_show(const char* show_id);
 	void map_tv_episode(const char* from, const char* to);
 	void map_film_video(const char* from, const char* to);
 }

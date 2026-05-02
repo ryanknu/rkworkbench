@@ -1,9 +1,9 @@
 use serde::Serialize;
 use crate::media::{MappableMediaId, FileBackedTitleId, MediaState, TvEpisodeId, FilmVideoId};
 use crate::requests::IncomingRequest;
-use crate::ui::TreeItemChange::ChangeColor;
+use crate::ui::TreeItemChange::{ChangeColor, ChangeText};
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Copy)]
 pub enum Tree {
     Files,
     TvShows,
@@ -13,6 +13,7 @@ pub enum Tree {
 #[derive(Serialize)]
 pub struct TreeItem {
     id: String,
+    parent_id: Option<String>,
     parent_text: String,
     text: String,
     color: String,
@@ -21,6 +22,7 @@ pub struct TreeItem {
 #[derive(Serialize)]
 pub enum TreeItemChange {
     ChangeColor(String),
+    ChangeText(String),
 }
 
 #[derive(Serialize)]
@@ -61,6 +63,7 @@ pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
             tree: Tree::Files,
             item: TreeItem {
                 id: file.id().to_owned(),
+                parent_id: None,
                 parent_text: file.collection().to_owned(),
                 text: file.name().to_owned(),
                 color: if file.marked_for_deletion() { "red".to_owned() } else { "Default".to_owned() },
@@ -70,10 +73,17 @@ pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
     ).collect()
 }
 
+fn format_gib_size(bytes: u64) -> String {
+    let gib = bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+    format!("{:.1}G", gib)
+}
+
 pub fn build_tv_shows_tree(state: &MediaState) -> Vec<UiEvent> {
     state.tv_show_episodes().iter().map(|episode| {
         let id = MappableMediaId::TvEpisode(episode.id.clone());
-        let color = if state.is_on_disk(&id) {
+        let mut text = format!("{} - {}", episode.series_key(), episode.name());
+        let color = if let Some(size) = state.get_on_disk_file_size(&id) {
+            text = format!("{} {}", format_gib_size(size), text);
             "green".to_owned()
         } else if state.is_mapped_to_file(&id) {
             "orange".to_owned()
@@ -85,8 +95,9 @@ pub fn build_tv_shows_tree(state: &MediaState) -> Vec<UiEvent> {
             tree: Tree::TvShows,
             item: TreeItem {
                 id: episode.id().to_owned(),
-                parent_text: state.tv_show_key(episode.show_id()).unwrap_or(String::from("ERROR")),
-                text: format!("{} - {}", episode.series_key(), episode.name()),
+                parent_id: Some(episode.show_id.0.clone()),
+                parent_text: state.tv_show_key(&episode.show_id).unwrap_or(String::from("ERROR")),
+                text,
                 color,
             },
             after: None,
@@ -97,7 +108,9 @@ pub fn build_tv_shows_tree(state: &MediaState) -> Vec<UiEvent> {
 pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
     state.film_videos().iter().map(|film| {
         let id = MappableMediaId::FilmVideo(film.id.clone());
-        let color = if state.is_on_disk(&id) {
+        let mut text = film.name().to_owned();
+        let color = if let Some(size) = state.get_on_disk_file_size(&id) {
+            text = format!("{} {}", format_gib_size(size), text);
             "green".to_owned()
         } else if state.is_mapped_to_file(&id) {
             "orange".to_owned()
@@ -109,8 +122,9 @@ pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
             tree: Tree::Films,
             item: TreeItem {
                 id: film.id().to_owned(),
+                parent_id: Some(film.film_id.0.clone()),
                 parent_text: film.film_key().to_owned(),
-                text: film.name().to_owned(),
+                text,
                 color,
             },
             after: None,
@@ -124,25 +138,50 @@ pub fn get_garbage_size(state: &MediaState) -> UiEvent {
     }
 }
 
-pub fn get_tree_change_action_for_mappable(state: &MediaState, id: MappableMediaId) -> UiEvent {
+pub fn get_tree_change_action_for_mappable(state: &MediaState, id: MappableMediaId) -> Vec<UiEvent> {
     let tree = match &id {
         MappableMediaId::TvEpisode(_) => Tree::TvShows,
         MappableMediaId::FilmVideo(_) => Tree::Films,
     };
 
-    let color = if state.is_on_disk(&id) {
+    let mut events = Vec::new();
+
+    let color = if let Some(size) = state.get_on_disk_file_size(&id) {
+        if let Some(base_text) = state.get_mappable_text(&id) {
+            events.push(UiEvent::ChangeTreeItem {
+                tree,
+                id: id.id().to_owned(),
+                change: ChangeText(format!("{} {}", format_gib_size(size), base_text))
+            });
+        }
         "green".to_owned()
     } else if state.is_mapped_to_file(&id) {
+        if let Some(base_text) = state.get_mappable_text(&id) {
+            events.push(UiEvent::ChangeTreeItem {
+                tree,
+                id: id.id().to_owned(),
+                change: ChangeText(base_text)
+            });
+        }
         "orange".to_owned()
     } else {
+        if let Some(base_text) = state.get_mappable_text(&id) {
+            events.push(UiEvent::ChangeTreeItem {
+                tree,
+                id: id.id().to_owned(),
+                change: ChangeText(base_text)
+            });
+        }
         "Default".to_owned()
     };
 
-    UiEvent::ChangeTreeItem {
+    events.push(UiEvent::ChangeTreeItem {
         tree,
         id: id.id().to_owned(),
         change: ChangeColor(color)
-    }
+    });
+
+    events
 }
 
 pub fn get_tree_change_action_for_mapping_file(id: FileBackedTitleId, is_mapped: bool) -> UiEvent {
@@ -157,9 +196,10 @@ pub fn get_tree_change_action_for_mapping_file(id: FileBackedTitleId, is_mapped:
     }
 }
 
-pub fn get_add_tree_item_for_film(state: &MediaState, id: String, film_name: String, description: String,) -> UiEvent {
+pub fn get_add_tree_item_for_film(state: &MediaState, id: String, parent_id: String, film_name: String, mut description: String,) -> UiEvent {
     let mappable_id = MappableMediaId::FilmVideo(FilmVideoId(id.clone()));
-    let color = if state.is_on_disk(&mappable_id) {
+    let color = if let Some(size) = state.get_on_disk_file_size(&mappable_id) {
+        description = format!("{} {}", format_gib_size(size), description);
         "green".to_owned()
     } else if state.is_mapped_to_file(&mappable_id) {
         "orange".to_owned()
@@ -171,6 +211,7 @@ pub fn get_add_tree_item_for_film(state: &MediaState, id: String, film_name: Str
         tree: Tree::Films,
         item: TreeItem {
             id,
+            parent_id: Some(parent_id),
             parent_text: film_name,
             text: description,
             color,
@@ -179,9 +220,10 @@ pub fn get_add_tree_item_for_film(state: &MediaState, id: String, film_name: Str
     }
 }
 
-pub fn get_add_tree_item_for_tv_show(state: &MediaState, id: String, show_name: String, description: String,) -> UiEvent {
+pub fn get_add_tree_item_for_tv_show(state: &MediaState, id: String, parent_id: String, show_name: String, mut description: String,) -> UiEvent {
     let mappable_id = MappableMediaId::TvEpisode(TvEpisodeId(id.clone()));
-    let color = if state.is_on_disk(&mappable_id) {
+    let color = if let Some(size) = state.get_on_disk_file_size(&mappable_id) {
+        description = format!("{} {}", format_gib_size(size), description);
         "green".to_owned()
     } else if state.is_mapped_to_file(&mappable_id) {
         "orange".to_owned()
@@ -193,6 +235,7 @@ pub fn get_add_tree_item_for_tv_show(state: &MediaState, id: String, show_name: 
         tree: Tree::TvShows,
         item: TreeItem {
             id,
+            parent_id: Some(parent_id),
             parent_text: show_name,
             text: description,
             color,

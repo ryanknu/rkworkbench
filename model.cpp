@@ -438,9 +438,9 @@ bool AppModel::isIdentified(const std::string& item) const {
     });
 }
 
-void AppModel::confirmPlays(std::string& episodeId) {
+void AppModel::confirmPlays(const std::string& episodeId) {
     if (isIdentified(episodeId)) return;
-    _mConfirmedEpisodes.push_back(std::move(episodeId));
+    _mConfirmedEpisodes.push_back(episodeId);
     // TODO: Write to disk, and read from disk.
 }
 

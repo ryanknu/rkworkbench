@@ -13,7 +13,7 @@ use std::str::FromStr;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use crate::media::{MappableMediaId, FileBackedTitleId, MediaState, TvEpisodeId, FilmVideoId};
+use crate::media::{MappableMediaId, FileBackedTitleId, MediaState, TvEpisodeId, FilmVideoId, TvShowId};
 use crate::requests::IncomingRequest;
 use crate::requests::IncomingRequest::*;
 use crate::ui::{build_files_tree, build_tv_shows_tree, get_garbage_size, UiEvent};
@@ -85,6 +85,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 LookupFilm(tmdb_id, tmdb_api_key) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key),
                 LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
                 RenameIdentified => requests::rename_identified(&MEDIA),
+                RsyncRequest(id) => requests::rsync_show(&MEDIA, id),
             };
 
             // It'd be nice to send batches of up to ~20 messages in a JSON array.
@@ -161,6 +162,15 @@ pub extern "C" fn rename_identified() {
     println!("[rust] rename_identified called");
 
     SENDER.get().map(|s| s.lock().unwrap().send(RenameIdentified));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rsync_show(show_id: *const c_char) {
+    println!("[rust] rsync_show called");
+
+    let show_id = cstr(show_id);
+
+    SENDER.get().map(|s| s.lock().unwrap().send(RsyncRequest(show_id)));
 }
 
 /// Returns the filename for a given id.

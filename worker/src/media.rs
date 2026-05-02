@@ -272,6 +272,14 @@ impl MediaState {
         Ref::map(self.film_videos.borrow(), |v| v.as_slice())
     }
 
+    pub fn get_show_by_id(&self, id: &TvShowId) -> Option<TvShow> {
+        self.tv_shows.borrow().iter().find(|show| show.id == *id).cloned()
+    }
+
+    pub fn get_film_by_id(&self, id: &FilmId) -> Option<Film> {
+        self.films.borrow().iter().find(|film| film.id == *id).cloned()
+    }
+
     pub fn tv_show_key(&self, id: &TvShowId) -> Option<String> {
         self.tv_shows.borrow().iter().find(|show| show.id.0 == id.0).map(|show| show.show_key.to_owned())
     }
@@ -312,8 +320,12 @@ impl MediaState {
     }
 
     pub fn is_on_disk(&self, id: &MappableMediaId) -> bool {
+        self.get_on_disk_file_size(id).is_some()
+    }
+
+    pub fn get_on_disk_file_size(&self, id: &MappableMediaId) -> Option<u64> {
         let titles = self.file_backed_titles.borrow();
-        titles.iter().any(|title| {
+        titles.iter().find(|title| {
             if !self.is_in_output_dir(&title.path) {
                 return false;
             }
@@ -353,7 +365,26 @@ impl MediaState {
                 _ => {}
             }
             false
-        })
+        }).map(|title| title.file_size)
+    }
+
+    pub fn get_mappable_text(&self, id: &MappableMediaId) -> Option<String> {
+        match id {
+            MappableMediaId::TvEpisode(eid) => {
+                self.tv_show_episodes.borrow().iter().find(|e| e.id == *eid)
+                    .map(|e| format!("{} - {}", e.series_key, e.name))
+            }
+            MappableMediaId::FilmVideo(fvid) => {
+                self.film_videos.borrow().iter().find(|v| v.id == *fvid)
+                    .map(|v| {
+                        if v.ty == "FeaturePresentation" {
+                            v.name.clone()
+                        } else {
+                            format!("{} - {}", v.ty, v.name)
+                        }
+                    })
+            }
+        }
     }
 
     pub fn is_mapped_to_file(&self, id: &MappableMediaId) -> bool {

@@ -1,8 +1,10 @@
-use crate::media::{MappableMediaId, FileBackedTitleId, Film, MediaId, TvShow, TvShowEpisode};
-use crate::tmdb::{TmdbFilmVideos, TmdbItem, TmdbTvShow, TmdbTvShowSeason};
+use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, MediaId, TvShow, TvShowEpisode, TvShowId};
+use crate::tmdb::{TmdbItem, TmdbTvShow, TmdbTvShowSeason};
 use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, Tree, UiEvent};
 use serde::{Deserialize, Serialize};
+use walkdir::WalkDir;
 use std::fs;
+use std::io::Write;
 use std::sync::{Mutex, OnceLock};
 use crate::convert::{FilmVideoBuilder, TvShowEpisodeBuilder};
 
@@ -15,6 +17,7 @@ pub enum IncomingRequest {
     MapMedia(FileBackedTitleId, MappableMediaId),
     PerformInitialLoad,
     RenameIdentified,
+    RsyncRequest(String),
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -134,8 +137,7 @@ pub fn map_media(media: &MediaState, from: FileBackedTitleId, to: MappableMediaI
 
     vec![
         get_tree_change_action_for_mapping_file(from, true),
-        get_tree_change_action_for_mappable(&media, to),
-    ]
+    ].into_iter().chain(get_tree_change_action_for_mappable(&media, to)).collect()
 }
 
 pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<String>) -> Vec<UiEvent> {
@@ -159,11 +161,11 @@ pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Str
     media.push_film(&film);
 
     let mut results = vec![
-        get_add_tree_item_for_film(&media, film.id.0.to_string(), film.film_key.clone(), "Feature Presentation".to_owned())
+        get_add_tree_item_for_film(&media, film.id.0.to_string(), film.id.0.to_string(), film.film_key.clone(), "Feature Presentation".to_owned())
     ];
 
     results.extend(
-        videos.results.into_iter().map(|video| get_add_tree_item_for_film(&media, video.id, film.film_key.clone(), format!("{} - {}", video.r#type, video.name)))
+        videos.results.into_iter().map(|video| get_add_tree_item_for_film(&media, video.id, film.id.0.to_string(), film.film_key.clone(), format!("{} - {}", video.r#type, video.name)))
     );
     
     results
@@ -204,6 +206,7 @@ pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Strin
             results.push(get_add_tree_item_for_tv_show(
                 &media,
                 episode.id.0.to_string(),
+                show.id.0.to_string(),
                 show.show_key.clone(),
                 format!("{} - {}", episode.series_key, episode.name)
             ));
@@ -284,9 +287,9 @@ pub fn rename_identified(media: &MediaState) -> Vec<UiEvent> {
         }
 
         if let Some(MediaId::TvEpisode(eid)) = mapped_id {
-            events.push(get_tree_change_action_for_mappable(&media, MappableMediaId::TvEpisode(eid)));
+            events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::TvEpisode(eid)));
         } else if let Some(MediaId::FilmVideo(fvid)) = mapped_id {
-            events.push(get_tree_change_action_for_mappable(&media, MappableMediaId::FilmVideo(fvid)));
+            events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::FilmVideo(fvid)));
         }
 
         events.push(UiEvent::RemoveTreeItemById {
@@ -297,4 +300,61 @@ pub fn rename_identified(media: &MediaState) -> Vec<UiEvent> {
 
     events.push(get_garbage_size(&media));
     events
+}
+
+pub fn rsync_show(media: &MediaState, id: String) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+
+    let folder_name = if let Some(show) = media.get_show_by_id(&TvShowId(id.clone())) {
+        Some(show.show_key.clone())
+    } else if let Some(film) = media.get_film_by_id(&FilmId(id.clone())) {
+        Some(film.film_key().to_owned())
+    } else {
+        None
+    };
+
+    let Some(folder_name) = folder_name else {
+        println!("Media not found for rsync: {:?}", id);
+        return vec![];
+    };
+
+    let source = media.media_dir.join("output").join(&folder_name);
+    let destination = format!("root@10.4.6.2:/mnt/user/emby/tv/{}/", folder_name);
+
+    println!("[rust] rsyncing {:?} to {:?}", source, destination);
+
+    // Spawn rsync
+    let status = std::process::Command::new("rsync")
+        .arg("-a")
+        .arg(format!("{}/", source.to_string_lossy()))
+        .arg(&destination)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("[rust] rsync successful for {}", folder_name);
+            // Log rsynced files
+            let log_file = media.config_dir.join("rsynced_files.txt");
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(log_file)
+            {
+                // We should log all files in the source directory
+                for entry in WalkDir::new(&source).into_iter().filter_map(|e| e.ok()) {
+                    if entry.path().is_file() {
+                        let _ = writeln!(file, "{}", entry.path().to_string_lossy());
+                    }
+                }
+            }
+        }
+        Ok(s) => {
+            println!("[rust] rsync failed for {} with status: {:?}", folder_name, s);
+        }
+        Err(e) => {
+            println!("[rust] failed to execute rsync: {:?}", e);
+        }
+    }
+
+    vec![]
 }

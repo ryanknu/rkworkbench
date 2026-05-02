@@ -37,12 +37,32 @@ void setMouseTrackingRecursive(QWidget *parent, bool enable) {
     }
 }
 
-void MainWindow::_addTreeItem(std::string treeName, std::string id, std::string parentText, std::string text, std::string color, std::string after) {
+void MainWindow::_addTreeItem(std::string treeName, std::string id, std::string parentId, std::string parentText, std::string text, std::string color, std::string after) {
     auto tree = ui->showsTree;
     if (treeName == "Files") {
         tree = ui->disksTree;
     } else if (treeName == "Films") {
         tree = ui->filmsTree;
+    }
+
+    // Find or create parent
+    auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
+    auto items = model->findItems(parentText.data());
+    QStandardItem* parent;
+    if (items.empty()) {
+        parent = new QStandardItem(parentText.data());
+        parent->setSelectable(true);
+        if (!parentId.empty()) {
+            parent->setData(q(parentId.data()), Qt::UserRole);
+        }
+        model->invisibleRootItem()
+            ->appendRow(parent);
+    } else {
+        parent = items.at(0);
+        if (!parentId.empty() && parent->data(Qt::UserRole).toString().isEmpty()) {
+             parent->setData(q(parentId.data()), Qt::UserRole);
+             parent->setSelectable(true);
+        }
     }
 
     // Make item
@@ -52,19 +72,7 @@ void MainWindow::_addTreeItem(std::string treeName, std::string id, std::string 
         item->setForeground(QBrush(QColor(color.c_str())));
     }
 
-    // Find or create parent
-    auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
-    auto items = model->findItems(parentText.data());
-    if (items.empty()) {
-        auto parent = new QStandardItem(parentText.data());
-        parent->setSelectable(false);
-        model->invisibleRootItem()
-            ->appendRow(parent);
-        parent->appendRow(item);
-    } else {
-        items.at(0)->appendRow(item);
-    }
-
+    parent->appendRow(item);
     tree->expandAll();
 }
 
@@ -111,6 +119,23 @@ void MainWindow::_changeTreeItemColor(std::string treeName, std::string id, std:
     if (!items.empty() && items.at(0).isValid()) {
         auto item = model->itemFromIndex(items.at(0));
         item->setForeground(QBrush(QColor(color.c_str())));
+    }
+}
+
+void MainWindow::_changeTreeItemText(std::string treeName, std::string id, std::string text) {
+    auto tree = ui->showsTree;
+    if (treeName == "Files") {
+        tree = ui->disksTree;
+    } else if (treeName == "Films") {
+        tree = ui->filmsTree;
+    }
+
+    auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
+    auto items = model->match(model->index(0, 0), Qt::UserRole, q(id), 1, Qt::MatchExactly | Qt::MatchRecursive);
+
+    if (!items.empty() && items.at(0).isValid()) {
+        auto item = model->itemFromIndex(items.at(0));
+        item->setText(q(text.c_str()));
     }
 }
 
@@ -389,9 +414,11 @@ MainWindow::MainWindow(QWidget *parent)
     ui->disksTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     connect(ui->disksTree, &QWidget::customContextMenuRequested, [&](const QPoint &pos) {
+        qDebug() << "disksTree customContextMenuRequested at" << pos;
         // TODO: See if this works with the selectedItem helper fn
         auto index = ui->disksTree->indexAt(pos);
         if (!index.isValid()) {
+            qDebug() << "index is not valid";
             return;
         }
 
@@ -422,46 +449,95 @@ MainWindow::MainWindow(QWidget *parent)
     ui->showsTree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     connect(ui->showsTree, &QWidget::customContextMenuRequested, [&](const QPoint &pos) {
-        auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
-        if (!appModel->hasEpisode(episodeId)) return;
-        auto episode = appModel->episodeById(episodeId);
-        auto episodeText = episode.season == 0 ? "specials" : std::format("season {:02}", episode.season);
+        qDebug() << "showsTree customContextMenuRequested at" << pos;
+        auto index = ui->showsTree->indexAt(pos);
+        if (!index.isValid()) {
+            qDebug() << "index is not valid";
+            return;
+        }
+        auto id = index.model()->data(index, Qt::UserRole).toString().toStdString();
+        qDebug() << "id from UserRole:" << q(id);
+
+        std::string showId;
+        std::string episodeId;
+
+        if (index.parent().isValid()) {
+            episodeId = id;
+            showId = index.parent().data(Qt::UserRole).toString().toStdString();
+        } else {
+            showId = id;
+        }
+
+        if (showId.empty()) return;
+        qDebug() << "showId:" << q(showId) << "episodeId:" << q(episodeId);
 
         QMenu menu;
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
-        auto confirmAction = menu.addAction(q("Confirm Plays (not implemented)"));
 
-        // TODO: Upload Episode, disabled if not green
-        //       Make Delete show and season work.
-        auto deleteMenu = menu.addMenu(q("Delete Stuff"));
-        deleteMenu->addAction(q("Delete Show (not implemented)"));
-        auto deleteSeason = deleteMenu->addAction(q(std::format("Delete {}", episodeText)));
+        if (!episodeId.empty()) {
+            QString episodeText = index.data(Qt::DisplayRole).toString();
+            QString seasonText = "Season";
+            if (episodeText.startsWith("S") && episodeText.length() >= 3 && isdigit(episodeText[1].toLatin1()) && isdigit(episodeText[2].toLatin1())) {
+                seasonText = "Season " + episodeText.mid(1, 2);
+            }
 
-        connect(deleteSeason, &QAction::triggered, [&]() {
-            auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
-            if (!appModel->hasEpisode(episodeId)) return;
-            auto episode = appModel->episodeById(episodeId);
+            auto confirmAction = menu.addAction(q("Confirm Plays (not implemented)"));
 
-            _queueTasks(appModel->getCommandsToDeleteSeason(episode.id));
-        });
+            auto deleteMenu = menu.addMenu(q("Delete Stuff"));
+            deleteMenu->addAction(q("Delete Show (not implemented)"));
+            auto deleteSeason = deleteMenu->addAction(q(std::format("Delete {}", seasonText.toStdString())));
 
-        connect(uploadAction, &QAction::triggered, [&]() {
-            auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
-            if (!appModel->hasEpisode(episodeId)) return;
-            auto episode = appModel->episodeById(episodeId);
+            connect(deleteSeason, &QAction::triggered, [this, episodeId]() {
+                std::string appModelId = episodeId;
+                if (!appModelId.starts_with("ep.")) appModelId = "ep." + appModelId;
+                if (!appModel->hasEpisode(appModelId)) return;
+                auto episode = appModel->episodeById(appModelId);
+                _queueTasks(appModel->getCommandsToDeleteSeason(episode.id));
+            });
 
-            _queueTasks(
-                appModel->getCommandsToUploadEntireShow(episode.showId)
-            );
-        });
+            connect(confirmAction, &QAction::triggered, [this, episodeId]() {
+                std::string appModelId = episodeId;
+                if (!appModelId.starts_with("ep.")) appModelId = "ep." + appModelId;
+                appModel->confirmPlays(appModelId);
+                _reflowShowsTree();
+            });
+        }
 
-        connect(confirmAction, &QAction::triggered, [&]() {
-            auto episodeId = _getIdForSelectedItemInTree(ui->showsTree);
-            appModel->confirmPlays(episodeId);
-            _reflowShowsTree();
+        connect(uploadAction, &QAction::triggered, [showId]() {
+            rsync_show(showId.c_str());
         });
 
         menu.exec(ui->showsTree->viewport()->mapToGlobal(pos));
+    });
+
+    // Set context menu on films
+    ui->filmsTree->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui->filmsTree, &QWidget::customContextMenuRequested, [&](const QPoint &pos) {
+        qDebug() << "filmsTree customContextMenuRequested at" << pos;
+        auto index = ui->filmsTree->indexAt(pos);
+        if (!index.isValid()) {
+            qDebug() << "index is not valid";
+            return;
+        }
+        auto id = index.model()->data(index, Qt::UserRole).toString().toStdString();
+        qDebug() << "id from UserRole:" << q(id);
+
+        std::string filmId;
+        if (index.parent().isValid()) {
+            filmId = index.parent().data(Qt::UserRole).toString().toStdString();
+        } else {
+            filmId = id;
+        }
+
+        if (filmId.empty()) return;
+
+        QMenu menu;
+        QAction * uploadAction = menu.addAction(q("Upload Film (rsync)"));
+        connect(uploadAction, &QAction::triggered, [filmId]() {
+            rsync_show(filmId.c_str());
+        });
+
+        menu.exec(ui->filmsTree->viewport()->mapToGlobal(pos));
     });
 
     // Button handlers
@@ -653,12 +729,13 @@ void MainWindow::processMessage(std::string message) {
     try {
         auto tree = m["AddTreeItem"]["tree"].get<std::string>();
         auto id = m["AddTreeItem"]["item"]["id"].get<std::string>();
+        auto parentId = m["AddTreeItem"]["item"]["parent_id"].is_null() ? "" : m["AddTreeItem"]["item"].value("parent_id", "");
         auto parentText = m["AddTreeItem"]["item"]["parent_text"].get<std::string>();
         auto text = m["AddTreeItem"]["item"]["text"].get<std::string>();
         auto color = m["AddTreeItem"]["item"]["color"].get<std::string>();
         std::string after = m["AddTreeItem"]["after"].is_null() ? "" : m["AddTreeItem"].value("after", "");
 
-        _addTreeItem(tree, id, parentText, text, color, after);
+        _addTreeItem(tree, id, parentId, parentText, text, color, after);
     } catch (...) {}
 
     try {
@@ -667,6 +744,14 @@ void MainWindow::processMessage(std::string message) {
         auto color = m["ChangeTreeItem"]["change"]["ChangeColor"].get<std::string>();
 
         _changeTreeItemColor(tree, id, color);
+    } catch (...) {}
+
+    try {
+        auto tree = m["ChangeTreeItem"]["tree"].get<std::string>();
+        auto id = m["ChangeTreeItem"]["id"].get<std::string>();
+        auto text = m["ChangeTreeItem"]["change"]["ChangeText"].get<std::string>();
+
+        _changeTreeItemText(tree, id, text);
     } catch (...) {}
 
     try {

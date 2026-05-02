@@ -40,7 +40,7 @@ public:
     void setPreprocessorCommand(std::string cmd);
     void identifyEpisode(const std::string& titleId, std::string showId);
     bool isIdentified(const std::string& item) const;
-    void confirmPlays(std::string& episodeId);
+    void confirmPlays(const std::string& episodeId);
     bool isConfirmedPlays(const std::string& episodeId) const;
     std::vector<std::string> generateJobsFromState();
     int queuedAndPendingJobs();
