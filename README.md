@@ -13,7 +13,8 @@ Ingest Workbench uses a hybrid architecture to combine the strengths of differen
 ## Features
 
 - **Media Management**: Organize ripped titles into TV shows or Films.
-- **Metadata Integration**: Fetch show and episode data from The Movie Database (TMDB).
+- **Metadata Integration & Caching**: Fetch and locally cache show, film, and episode data from The Movie Database (TMDB) for offline access and improved performance.
+- **Bulk Renaming & Standardizing**: Automatically rename and reorganize identified media files into a standardized directory structure (e.g., `Title (Year) [tmdb=ID]/SXXEXX.mkv`) in the output directory.
 - **Integrated Player**: Preview titles directly within the app to confirm content.
 - **Task Queue**: Background execution of long-running tasks like re-encoding or uploading.
 - **Filesystem Mapping**: Link local ripped files to identified media metadata.

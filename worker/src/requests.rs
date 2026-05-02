@@ -1,7 +1,8 @@
 use crate::media::{MappableMediaId, FileBackedTitleId, Film, MediaId, TvShow, TvShowEpisode};
 use crate::tmdb::{TmdbFilmVideos, TmdbItem, TmdbTvShow, TmdbTvShowSeason};
-use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, UiEvent};
+use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, Tree, UiEvent};
 use serde::{Deserialize, Serialize};
+use std::fs;
 use std::sync::{Mutex, OnceLock};
 use crate::convert::{FilmVideoBuilder, TvShowEpisodeBuilder};
 
@@ -13,6 +14,7 @@ pub enum IncomingRequest {
     LookupTv(String, Option<String>),
     MapMedia(FileBackedTitleId, MappableMediaId),
     PerformInitialLoad,
+    RenameIdentified,
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -209,4 +211,79 @@ pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Strin
     }
 
     results
+}
+
+pub fn rename_identified(media: &MediaState) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut events = Vec::new();
+
+    let media_dir = media.media_dir.clone();
+    let output_dir = media_dir.join("output");
+
+    let mut to_rename = Vec::new();
+
+    {
+        let titles = media.file_backed_titles.borrow();
+        for title in titles.iter() {
+            if let Some(mapped_id) = &title.mapped_media {
+                let target_rel_path = match mapped_id {
+                    MediaId::TvEpisode(ep_id) => {
+                        let episodes = media.tv_show_episodes.borrow();
+                        if let Some(episode) = episodes.iter().find(|e| e.id == *ep_id) {
+                            if let Some(show_key) = media.tv_show_key(&episode.show_id) {
+                                Some(vec![show_key, format!("{}.mkv", episode.series_key)])
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    MediaId::FilmVideo(fv_id) => {
+                        let videos = media.film_videos.borrow();
+                        if let Some(video) = videos.iter().find(|v| v.id == *fv_id) {
+                            Some(video.get_ideal_storage_path())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                if let Some(rel_path) = target_rel_path {
+                    let mut target_path = output_dir.clone();
+                    for part in rel_path {
+                        target_path = target_path.join(part);
+                    }
+                    to_rename.push((title.id.clone(), title.path.clone(), target_path));
+                }
+            }
+        }
+    }
+
+    for (id, source, dest) in to_rename {
+        if let Some(parent) = dest.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                println!("Error creating directory {:?}: {:?}", parent, e);
+                continue;
+            }
+        }
+
+        println!("Renaming {:?} to {:?}", source, dest);
+        if let Err(e) = fs::rename(&source, &dest) {
+            println!("Error renaming file {:?} to {:?}: {:?}", source, dest, e);
+            continue;
+        }
+
+        // Successfully renamed. Remove from media state.
+        media.file_backed_titles.borrow_mut().retain(|t| t.id != id);
+
+        events.push(UiEvent::RemoveTreeItemById {
+            tree: Tree::Files,
+            id: id.0,
+        });
+    }
+
+    events.push(get_garbage_size(&media));
+    events
 }

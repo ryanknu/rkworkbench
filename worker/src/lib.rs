@@ -84,6 +84,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 MapMedia(from, to) => requests::map_media(&MEDIA, from, to),
                 LookupFilm(tmdb_id, tmdb_api_key) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key),
                 LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
+                RenameIdentified => requests::rename_identified(&MEDIA),
             };
 
             // It'd be nice to send batches of up to ~20 messages in a JSON array.
@@ -153,6 +154,13 @@ pub extern "C" fn lookup_tv(tmdb_id: *const c_char, tmdb_api_key: *const c_char)
     };
 
     SENDER.get().map(|s| s.lock().unwrap().send(LookupTv(tmdb_id, tmdb_api_key)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rename_identified() {
+    println!("[rust] rename_identified called");
+
+    SENDER.get().map(|s| s.lock().unwrap().send(RenameIdentified));
 }
 
 /// Returns the filename for a given id.

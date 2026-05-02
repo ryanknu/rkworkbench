@@ -122,6 +122,11 @@ impl TmdbCache {
                 .body_mut()
                 .read_to_vec()?;
 
+            // Save to disk
+            fs::create_dir_all(film_location.parent().unwrap()).ok();
+            fs::write(&film_location, &body).ok();
+            fs::write(&videos_location, &body2).ok();
+
             (body, body2)
         };
 
@@ -132,14 +137,6 @@ impl TmdbCache {
     }
 
     pub fn query_tv(&self, api_key: &str, tmdb_id: &str) -> Result<(Vec<u8>, Vec<Vec<u8>>), Box<dyn std::error::Error>> {
-        let mut base_url = format!("{}/tv/{tmdb_id}", self.tmdb_base_url);
-        let body = ureq::get(&base_url)
-            .header("Authorization", format!("Bearer {api_key}"))
-            .call()?
-            .body_mut()
-            .read_to_vec()?;
-
-        // Read seasons
         #[derive(Debug, Deserialize)]
         struct Series {
             seasons: Vec<SeriesSeason>,
@@ -150,10 +147,45 @@ impl TmdbCache {
             season_number: usize,
         }
 
-        let series: Series = serde_json::from_slice(&body).unwrap();
+        let tv_location = self.get_tv_file_location(tmdb_id);
+
+        if tv_location.exists() {
+            let body = fs::read(&tv_location)?;
+            let series: Series = serde_json::from_slice(&body)?;
+
+            let mut season_bodies = Vec::new();
+            let mut all_seasons_exist = true;
+            for season in &series.seasons {
+                let season_loc = self.get_tv_season_file_location(tmdb_id, season.season_number);
+                if season_loc.exists() {
+                    season_bodies.push(fs::read(season_loc)?);
+                } else {
+                    all_seasons_exist = false;
+                    break;
+                }
+            }
+
+            if all_seasons_exist {
+                println!("Loading TV show from disk: {:?}", tv_location);
+                return Ok((body, season_bodies));
+            }
+        }
+
+        let mut base_url = format!("{}/tv/{tmdb_id}", self.tmdb_base_url);
+        let body = ureq::get(&base_url)
+            .header("Authorization", format!("Bearer {api_key}"))
+            .call()?
+            .body_mut()
+            .read_to_vec()?;
+
+        let series: Series = serde_json::from_slice(&body)?;
         let season_numbers: Vec<usize> = series.seasons.iter().map(|s| s.season_number).collect();
 
-        base_url.push_str("/season");
+        // Save TV show to disk
+        fs::create_dir_all(tv_location.parent().unwrap()).ok();
+        fs::write(&tv_location, &body).ok();
+
+        let season_base_url = format!("{base_url}/season");
 
         // Complication to implement rate limiting here is important, if we do something like load every
         // season of Saturday Night Live, that would not be friendly to TMDB.
@@ -170,12 +202,17 @@ impl TmdbCache {
             }
 
             last_request_time = Instant::now();
-            let season_url = format!("{}/{}", base_url, season_number);
+            let season_url = format!("{}/{}", season_base_url, season_number);
             let season_body = ureq::get(&season_url)
                 .header("Authorization", format!("Bearer {api_key}"))
                 .call()?
                 .body_mut()
                 .read_to_vec()?;
+
+            // Save season to disk
+            let season_loc = self.get_tv_season_file_location(tmdb_id, *season_number);
+            fs::write(&season_loc, &season_body).ok();
+
             season_bodies.push(season_body);
         }
 
@@ -183,10 +220,18 @@ impl TmdbCache {
     }
 
     fn get_movie_file_location(&self, tmdb_id: &str) -> PathBuf {
-        self.dir.join("movies").join(format!("{tmdb_id}.json"))
+        self.dir.join("films").join(format!("{tmdb_id}.json"))
     }
 
     fn get_movie_videos_file_location(&self, tmdb_id: &str) -> PathBuf {
-        self.dir.join("movies").join(format!("{tmdb_id}-videos.json"))
+        self.dir.join("films").join(format!("{tmdb_id}-videos.json"))
+    }
+
+    fn get_tv_file_location(&self, tmdb_id: &str) -> PathBuf {
+        self.dir.join("tv").join(format!("{tmdb_id}.json"))
+    }
+
+    fn get_tv_season_file_location(&self, tmdb_id: &str, season_number: usize) -> PathBuf {
+        self.dir.join("tv").join(format!("{tmdb_id}-S{season_number}.json"))
     }
 }

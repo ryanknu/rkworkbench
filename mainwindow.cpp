@@ -68,6 +68,32 @@ void MainWindow::_addTreeItem(std::string treeName, std::string id, std::string 
     tree->expandAll();
 }
 
+void MainWindow::_removeTreeItemById(std::string treeName, std::string id) {
+    auto tree = ui->showsTree;
+    if (treeName == "Files") {
+        tree = ui->disksTree;
+    } else if (treeName == "Films") {
+        tree = ui->filmsTree;
+    }
+
+    auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
+    auto items = model->match(model->index(0, 0), Qt::UserRole, q(id), 1, Qt::MatchExactly | Qt::MatchRecursive);
+
+    if (!items.empty() && items.at(0).isValid()) {
+        auto index = items.at(0);
+        auto parentIndex = index.parent();
+        if (parentIndex.isValid()) {
+            auto* parentItem = model->itemFromIndex(parentIndex);
+            parentItem->removeRow(index.row());
+            if (parentItem->rowCount() == 0) {
+                model->removeRow(parentItem->row());
+            }
+        } else {
+            model->removeRow(index.row());
+        }
+    }
+}
+
 void MainWindow::_changeTreeItemColor(std::string treeName, std::string id, std::string color) {
     auto tree = ui->showsTree;
     if (treeName == "Files") {
@@ -488,8 +514,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->execBtn, &QPushButton::clicked, [&]() {
-        auto jobs = appModel->generateJobsFromState();
-        _queueTasks(jobs);
+        rename_identified();
     });
 
     connect(ui->gcBtn, &QPushButton::clicked, [&]() {
@@ -642,6 +667,13 @@ void MainWindow::processMessage(std::string message) {
         auto color = m["ChangeTreeItem"]["change"]["ChangeColor"].get<std::string>();
 
         _changeTreeItemColor(tree, id, color);
+    } catch (...) {}
+
+    try {
+        auto tree = m["RemoveTreeItemById"]["tree"].get<std::string>();
+        auto id = m["RemoveTreeItemById"]["id"].get<std::string>();
+
+        _removeTreeItemById(tree, id);
     } catch (...) {}
 
     try {

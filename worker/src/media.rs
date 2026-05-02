@@ -10,15 +10,15 @@ use walkdir::WalkDir;
 use crate::tmdb::TmdbCache;
 
 pub struct MediaState {
-    tmdb_cache: TmdbCache,
-    tmdb_api_key: Option<String>,
-    media_dir: PathBuf,
-    config_dir: PathBuf,
-    file_backed_titles: RefCell<Vec<FileBackedTitle>>,
-    films: RefCell<Vec<Film>>,
-    film_videos: RefCell<Vec<FilmVideo>>,
-    tv_shows: RefCell<Vec<TvShow>>,
-    tv_show_episodes: RefCell<Vec<TvShowEpisode>>,
+    pub(crate) tmdb_cache: TmdbCache,
+    pub(crate) tmdb_api_key: Option<String>,
+    pub(crate) media_dir: PathBuf,
+    pub(crate) config_dir: PathBuf,
+    pub(crate) file_backed_titles: RefCell<Vec<FileBackedTitle>>,
+    pub(crate) films: RefCell<Vec<Film>>,
+    pub(crate) film_videos: RefCell<Vec<FilmVideo>>,
+    pub(crate) tv_shows: RefCell<Vec<TvShow>>,
+    pub(crate) tv_show_episodes: RefCell<Vec<TvShowEpisode>>,
 }
 
 impl Debug for MediaState {
@@ -130,13 +130,13 @@ pub enum MediaItem {
     TvShowEpisode(TvShowEpisode),
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct TvShowId(pub String);
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct FilmId(pub String);
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct FilmVideoId(pub String);
-#[derive(Clone, Deserialize, Serialize, Debug)]
+#[derive(Clone, Deserialize, Serialize, PartialEq, Debug)]
 pub struct TvEpisodeId(pub String);
 #[derive(Clone, Deserialize, PartialEq, Serialize, Debug)]
 pub struct FileBackedTitleId(pub String);
@@ -190,25 +190,13 @@ pub struct FilmVideo {
 
 #[derive(Clone)]
 pub struct FileBackedTitle {
-    id: FileBackedTitleId,
-    format: AvFormat,
-    path: PathBuf,
-    mapped_media: Option<MediaId>,
-    collection: String,
-    file_name: String,
-    file_size: u64,
-}
-
-impl PartialEq<&TvEpisodeId> for TvEpisodeId {
-    fn eq(&self, other: &&TvEpisodeId) -> bool {
-        self.0 == other.0
-    }
-}
-
-impl PartialEq<&FilmVideoId> for FilmVideoId {
-    fn eq(&self, other: &&FilmVideoId) -> bool {
-        self.0 == other.0
-    }
+    pub(crate) id: FileBackedTitleId,
+    pub(crate) format: AvFormat,
+    pub(crate) path: PathBuf,
+    pub(crate) mapped_media: Option<MediaId>,
+    pub(crate) collection: String,
+    pub(crate) file_name: String,
+    pub(crate) file_size: u64,
 }
 
 impl MediaState {
@@ -298,7 +286,7 @@ impl MediaState {
                 match to {
                     MappableMediaId::TvEpisode(id) => {
                         for item in self.tv_show_episodes.borrow().iter() {
-                            if item.id == id {
+                            if item.id == *id {
                                 let mut new_title = title.to_owned();
                                 new_title.mapped_media = Some(MediaId::TvEpisode(item.id.clone()));
                                 *title = new_title;
@@ -308,7 +296,7 @@ impl MediaState {
                     }
                     MappableMediaId::FilmVideo(id) => {
                         for item in self.film_videos.borrow().iter() {
-                            if item.id == id {
+                            if item.id == *id {
                                 let mut new_title = title.to_owned();
                                 new_title.mapped_media = Some(MediaId::FilmVideo(item.id.clone()));
                                 *title = new_title;
@@ -329,14 +317,6 @@ impl MediaState {
 
     pub fn get_tmdb_api_key(&self) -> &str {
         self.tmdb_api_key.as_ref().unwrap()
-    }
-
-    pub fn get_movie_file_location(&self, tmdb_id: &str) -> PathBuf {
-        self.config_dir.join("movies").join(format!("{tmdb_id}.json"))
-    }
-
-    pub fn get_movie_videos_file_location(&self, tmdb_id: &str) -> PathBuf {
-        self.config_dir.join("movies").join(format!("{tmdb_id}-videos.json"))
     }
 
     pub fn get_file_backed_title_path(&self, id: &FileBackedTitleId) -> Option<PathBuf> {
@@ -489,7 +469,6 @@ impl FilmVideo {
     pub fn get_ideal_storage_path(&self) -> Vec<String> {
         // This is for MKV's of FP only
         vec![
-            "movies".to_owned(),
             self.film_key.to_owned(),
             format!("{}.mkv", self.film_key)
         ]
