@@ -72,9 +72,12 @@ extern "C" {
 	void lookup_tv(const char* id, const char* api_key);
 	void rename_identified();
 	void rsync_show(const char* show_id);
+	void delete_tv_show(const char* show_id);
+	void delete_tv_season(const char* show_id, size_t season_number);
 	void map_tv_episode(const char* from, const char* to);
 	void map_film_video(const char* from, const char* to);
 	void confirm_tv_episode_plays(const char* id);
 	void confirm_film_video_plays(const char* id);
 	void unidentify_tv_episode(const char* id);
+	void reencode_tv_episode(const char* id);
 }

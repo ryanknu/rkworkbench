@@ -239,6 +239,11 @@ impl MediaState {
         path.starts_with(out_dir)
     }
 
+    fn is_in_originals_dir(&self, path: &Path) -> bool {
+        let originals_dir = self.media_dir.join("originals");
+        path.starts_with(originals_dir)
+    }
+
     fn is_mkv(&self, e: walkdir::DirEntry) -> Option<walkdir::DirEntry> {
         if e.path().extension().map_or(false, |ext| ext == "mkv") {
             Some(e)
@@ -255,6 +260,9 @@ impl MediaState {
             }
 
             let path = entry.path();
+            if self.is_in_originals_dir(path) {
+                continue;
+            }
 
             // get the last two path parts as a tuple
             let mut components = path.components();

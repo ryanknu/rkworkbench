@@ -306,6 +306,7 @@ void AppModel::removeLocalShow(const std::string& showId) {
 */
 void AppModel::scanLocalTitles()
 {
+    return;
     reloadConfirmedPlays();
     _mTitles.clear();
 
@@ -607,40 +608,6 @@ std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(const std::st
         cmd,
         // And update the UI
         "_scanLocalTitles",
-        "_clearTrees",
-        "_initialLoad"
-    };
-}
-
-/**
- * Gets comands to delete a season.
- * @param episodeId - Any episode whose season is to be deleted.
- * @return
- */
-std::vector<std::string> AppModel::getCommandsToDeleteSeason(const std::string& episodeId) {
-    if (!hasEpisode(episodeId)) {
-        return { };
-    }
-
-    auto episode = episodeById(episodeId);
-    return {
-        std::format("_deleteTvSeason {} {}", episode.showId, episode.season),
-        std::format("_removeLocalSeason {} {}", episode.showId, episode.season),
-        "_scanLocalTmdbData *",
-        "_clearTrees",
-        "_initialLoad"
-    };
-}
-
-std::vector<std::string> AppModel::getCommandsToDeleteShow(const std::string& showId) {
-    if (!hasShow(showId)) {
-        return { };
-    }
-
-    return {
-        std::format("_deleteTvShow {}", showId),
-        std::format("_removeLocalShow {}", showId),
-        "_scanLocalTmdbData *",
         "_clearTrees",
         "_initialLoad"
     };

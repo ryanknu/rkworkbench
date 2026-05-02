@@ -19,6 +19,7 @@ use crate::requests::IncomingRequest::*;
 use crate::ui::{build_files_tree, build_tv_shows_tree, get_garbage_size, UiEvent};
 
 static SENDER: OnceLock<Mutex<Sender<IncomingRequest>>> = OnceLock::new();
+static FFMPEG_SENDER: OnceLock<Mutex<Sender<IncomingRequest>>> = OnceLock::new();
 static MEDIA: OnceLock<Mutex<MediaState>> = OnceLock::new();
 
 // Recreate the C callback type in Rust
@@ -59,12 +60,15 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
     let (send, recv) = channel();
     SENDER.set(Mutex::new(send)).unwrap();
 
+    let (f_send, f_recv) = channel();
+    FFMPEG_SENDER.set(Mutex::new(f_send)).unwrap();
+
     // Initial set up
     let media_dir = cstr(media_dir);
     let path = PathBuf::from_str(&media_dir).unwrap();
     MEDIA.set(Mutex::new(MediaState::new(path))).unwrap();
 
-    // Spawn a new background thread
+    // Spawn a new background thread for general requests
     thread::spawn(move || {
         push!(cb, ptrd, &UiEvent::WorkerReady);
 
@@ -90,9 +94,34 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 DeleteTvShow(id) => requests::delete_tv_show(&MEDIA, id),
                 DeleteTvSeason(id, season) => requests::delete_tv_season(&MEDIA, id, season),
                 Unidentify(id) => requests::unidentify_tv_episode(&MEDIA, id),
+                _ => vec![],
             };
 
             // It'd be nice to send batches of up to ~20 messages in a JSON array.
+            for event in events {
+                push!(cb, ptrd, &event);
+            }
+
+            push!(cb, ptrd, &UiEvent::CommandCompleted(message));
+        }
+    });
+
+    // Spawn a new background thread for ffmpeg requests
+    thread::spawn(move || {
+        loop {
+            let message = match f_recv.recv() {
+                Ok(message) => message,
+                Err(x) => panic!("FFmpeg receiver error. Background worker panic. RecvError: {:?}", x),
+            };
+
+            push!(cb, ptrd, &UiEvent::CommandStarted(message.clone()));
+
+            // Process `message`
+            let events = match message.clone() {
+                ReencodeRequest(id) => requests::reencode_tv_episode(&MEDIA, id),
+                _ => vec![],
+            };
+
             for event in events {
                 push!(cb, ptrd, &event);
             }
@@ -220,6 +249,15 @@ pub extern "C" fn unidentify_tv_episode(id: *const c_char) {
     let id = TvEpisodeId(cstr(id));
 
     SENDER.get().map(|s| s.lock().unwrap().send(Unidentify(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn reencode_tv_episode(id: *const c_char) {
+    println!("[rust] reencode_tv_episode called");
+
+    let id = TvEpisodeId(cstr(id));
+
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeRequest(id)));
 }
 
 /// Returns the filename for a given id.

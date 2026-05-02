@@ -22,6 +22,7 @@ pub enum IncomingRequest {
     DeleteTvShow(String),
     DeleteTvSeason(String, usize),
     Unidentify(TvEpisodeId),
+    ReencodeRequest(TvEpisodeId),
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -384,16 +385,82 @@ pub fn confirm_play(media: &MediaState, id: MappableMediaId) -> Vec<UiEvent> {
 
 pub fn delete_tv_show(media: &MediaState, id: String) -> Vec<UiEvent> {
     let media = unlock_media!(media);
-    let id = if id.starts_with("show.") { id[5..].to_owned() } else { id };
-    media.delete_tv_show(&TvShowId(id));
-    vec![]
+    let raw_id = if id.starts_with("show.") { id[5..].to_owned() } else { id.clone() };
+    let show_id = TvShowId(raw_id.clone());
+
+    let mut events = Vec::new();
+
+    // 1. Identify all episodes to be removed and their mappings
+    let mut episodes_to_remove = Vec::new();
+    {
+        let episodes = media.tv_show_episodes.borrow();
+        for ep in episodes.iter() {
+            if ep.show_id == show_id {
+                episodes_to_remove.push(ep.id.clone());
+            }
+        }
+    }
+
+    // 2. Unmap files in Files tree
+    {
+        let mut titles = media.file_backed_titles.borrow_mut();
+        for title in titles.iter_mut() {
+            if let Some(MediaId::TvEpisode(ep_id)) = &title.mapped_media {
+                if episodes_to_remove.contains(ep_id) {
+                    title.mapped_media = None;
+                    events.push(get_tree_change_action_for_mapping_file(title.id.clone(), false));
+                }
+            }
+        }
+    }
+
+    // 3. Remove show from tree (this removes all episodes in Qt)
+    events.push(UiEvent::RemoveTreeItemById {
+        tree: Tree::TvShows,
+        id: raw_id,
+    });
+
+    media.delete_tv_show(&show_id);
+    events.push(get_garbage_size(&media));
+    events
 }
 
 pub fn delete_tv_season(media: &MediaState, id: String, season: usize) -> Vec<UiEvent> {
     let media = unlock_media!(media);
-    let id = if id.starts_with("show.") { id[5..].to_owned() } else { id };
-    media.delete_tv_season(&TvShowId(id), season);
-    vec![]
+    let raw_id = if id.starts_with("show.") { id[5..].to_owned() } else { id.clone() };
+    let show_id = TvShowId(raw_id);
+
+    let mut events = Vec::new();
+    let mut episodes_to_remove = Vec::new();
+    {
+        let episodes = media.tv_show_episodes.borrow();
+        for ep in episodes.iter() {
+            if ep.show_id == show_id && ep.season_number == season {
+                episodes_to_remove.push(ep.id.clone());
+                events.push(UiEvent::RemoveTreeItemById {
+                    tree: Tree::TvShows,
+                    id: ep.id.0.clone(),
+                });
+            }
+        }
+    }
+
+    // Unmap files
+    {
+        let mut titles = media.file_backed_titles.borrow_mut();
+        for title in titles.iter_mut() {
+            if let Some(MediaId::TvEpisode(ep_id)) = &title.mapped_media {
+                if episodes_to_remove.contains(ep_id) {
+                    title.mapped_media = None;
+                    events.push(get_tree_change_action_for_mapping_file(title.id.clone(), false));
+                }
+            }
+        }
+    }
+
+    media.delete_tv_season(&show_id, season);
+    events.push(get_garbage_size(&media));
+    events
 }
 
 pub fn unidentify_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent> {
@@ -461,5 +528,94 @@ pub fn unidentify_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent
     }
 
     events.push(get_garbage_size(&media));
+    events
+}
+
+pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+
+    // 1. Find the episode and its current path
+    let episode_info = {
+        let episodes = media.tv_show_episodes.borrow();
+        let tv_shows = media.tv_shows.borrow();
+        episodes.iter().find(|e| e.id == id).and_then(|e| {
+            tv_shows.iter().find(|s| s.id == e.show_id).map(|s| (s.show_key.clone(), e.series_key.clone()))
+        })
+    };
+
+    let Some((show_key, series_key)) = episode_info else {
+        println!("Episode info not found for reencode: {:?}", id);
+        return vec![];
+    };
+
+    let current_rel_path = vec![show_key, format!("{}.mkv", series_key)];
+    let mut current_path = media.media_dir.join("output");
+    for part in &current_rel_path {
+        current_path = current_path.join(part);
+    }
+
+    if !current_path.exists() {
+        println!("File not found for reencode: {:?}", current_path);
+        return vec![];
+    }
+
+    // 2. Determine the "originals" path
+    let mut originals_path = media.media_dir.join("originals");
+    for part in &current_rel_path {
+        originals_path = originals_path.join(part);
+    }
+
+    // 3. Move file to originals
+    if let Some(parent) = originals_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            println!("Error creating originals directory {:?}: {:?}", parent, e);
+            return vec![];
+        }
+    }
+
+    println!("Moving {:?} to {:?}", current_path, originals_path);
+    if let Err(e) = fs::rename(&current_path, &originals_path) {
+        println!("Error moving file to originals: {:?}", e);
+        return vec![];
+    }
+
+    // 4. Run ffmpeg
+    // Command: ffmpeg -i {originals_path} -map 0 -c copy -c:v libx265 -crf 18 {current_path}
+    println!("Running ffmpeg on {:?}", originals_path);
+    let status = std::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg(&originals_path)
+        .arg("-map")
+        .arg("0")
+        .arg("-c")
+        .arg("copy")
+        .arg("-c:v")
+        .arg("libx265")
+        .arg("-crf")
+        .arg("18")
+        .arg(&current_path)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("ffmpeg successful for {:?}", current_path);
+            // 5. Update state (file size)
+            if let Ok(metadata) = fs::metadata(&current_path) {
+                let mut titles = media.file_backed_titles.borrow_mut();
+                if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
+                    title.file_size = metadata.len();
+                }
+            }
+        }
+        Ok(s) => {
+            println!("ffmpeg failed with status: {:?}", s);
+        }
+        Err(e) => {
+            println!("failed to execute ffmpeg: {:?}", e);
+        }
+    }
+
+    let mut events = vec![get_garbage_size(&media)];
+    events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::TvEpisode(id)));
     events
 }

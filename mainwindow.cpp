@@ -479,7 +479,10 @@ MainWindow::MainWindow(QWidget *parent)
             auto deleteMenu = menu.addMenu(q("Delete Stuff"));
             auto deleteShow = deleteMenu->addAction(q("Delete Show"));
             connect(deleteShow, &QAction::triggered, [this, showId]() {
-                _queueTasks(appModel->getCommandsToDeleteShow(showId));
+                delete_tv_show(showId.c_str());
+                std::string appModelId = showId;
+                if (!appModelId.starts_with("show.")) appModelId = "show." + appModelId;
+                appModel->removeLocalShow(appModelId);
             });
         }
 
@@ -492,13 +495,17 @@ MainWindow::MainWindow(QWidget *parent)
 
             auto confirmAction = menu.addAction(q("Confirm Plays"));
             auto unidentifyAction = menu.addAction(q("Unidentify"));
+            auto reencodeAction = menu.addAction(q("Re-encode (ffmpeg)"));
 
             auto deleteMenu = menu.addMenu(q("Delete Stuff"));
             auto deleteShow = deleteMenu->addAction(q("Delete Show"));
             auto deleteSeason = deleteMenu->addAction(q(std::format("Delete {}", seasonText.toStdString())));
 
             connect(deleteShow, &QAction::triggered, [this, showId]() {
-                _queueTasks(appModel->getCommandsToDeleteShow(showId));
+                delete_tv_show(showId.c_str());
+                std::string appModelId = showId;
+                if (!appModelId.starts_with("show.")) appModelId = "show." + appModelId;
+                appModel->removeLocalShow(appModelId);
             });
 
             connect(deleteSeason, &QAction::triggered, [this, episodeId]() {
@@ -506,7 +513,9 @@ MainWindow::MainWindow(QWidget *parent)
                 if (!appModelId.starts_with("ep.")) appModelId = "ep." + appModelId;
                 if (!appModel->hasEpisode(appModelId)) return;
                 auto episode = appModel->episodeById(appModelId);
-                _queueTasks(appModel->getCommandsToDeleteSeason(episode.id));
+
+                delete_tv_season(episode.showId.c_str(), episode.season);
+                appModel->removeLocalSeason(episode.showId, episode.season);
             });
 
             connect(confirmAction, &QAction::triggered, [this, episodeId]() {
@@ -519,6 +528,10 @@ MainWindow::MainWindow(QWidget *parent)
 
             connect(unidentifyAction, &QAction::triggered, [episodeId]() {
                 unidentify_tv_episode(episodeId.c_str());
+            });
+
+            connect(reencodeAction, &QAction::triggered, [episodeId]() {
+                reencode_tv_episode(episodeId.c_str());
             });
         }
 
