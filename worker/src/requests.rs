@@ -123,7 +123,7 @@ pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
 }
 
 pub fn map_media(media: &MediaState, from: FileBackedTitleId, to: MappableMediaId) -> Vec<UiEvent> {
-    let mut media = unlock_media!(media);
+    let media = unlock_media!(media);
 
     let Some(mapping) = media.map_media(&from, &to) else {
         println!("Mapping failed for file {:?} to {:?}", from, to);
@@ -134,7 +134,7 @@ pub fn map_media(media: &MediaState, from: FileBackedTitleId, to: MappableMediaI
 
     vec![
         get_tree_change_action_for_mapping_file(from, true),
-        get_tree_change_action_for_mappable(to, true),
+        get_tree_change_action_for_mappable(&media, to),
     ]
 }
 
@@ -159,11 +159,11 @@ pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Str
     media.push_film(&film);
 
     let mut results = vec![
-        get_add_tree_item_for_film(film.id.0.to_string(), film.film_key.clone(), "Feature Presentation".to_owned())
+        get_add_tree_item_for_film(&media, film.id.0.to_string(), film.film_key.clone(), "Feature Presentation".to_owned())
     ];
 
     results.extend(
-        videos.results.into_iter().map(|video| get_add_tree_item_for_film(video.id, film.film_key.clone(), format!("{} - {}", video.r#type, video.name)))
+        videos.results.into_iter().map(|video| get_add_tree_item_for_film(&media, video.id, film.film_key.clone(), format!("{} - {}", video.r#type, video.name)))
     );
     
     results
@@ -202,6 +202,7 @@ pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Strin
 
         for episode in &episodes {
             results.push(get_add_tree_item_for_tv_show(
+                &media,
                 episode.id.0.to_string(),
                 show.show_key.clone(),
                 format!("{} - {}", episode.series_key, episode.name)
@@ -275,8 +276,18 @@ pub fn rename_identified(media: &MediaState) -> Vec<UiEvent> {
             continue;
         }
 
-        // Successfully renamed. Remove from media state.
-        media.file_backed_titles.borrow_mut().retain(|t| t.id != id);
+        // Successfully renamed. Update path in media state.
+        let mut mapped_id = None;
+        if let Some(title) = media.file_backed_titles.borrow_mut().iter_mut().find(|t| t.id == id) {
+            title.path = dest.clone();
+            mapped_id = title.mapped_media.clone();
+        }
+
+        if let Some(MediaId::TvEpisode(eid)) = mapped_id {
+            events.push(get_tree_change_action_for_mappable(&media, MappableMediaId::TvEpisode(eid)));
+        } else if let Some(MediaId::FilmVideo(fvid)) = mapped_id {
+            events.push(get_tree_change_action_for_mappable(&media, MappableMediaId::FilmVideo(fvid)));
+        }
 
         events.push(UiEvent::RemoveTreeItemById {
             tree: Tree::Files,

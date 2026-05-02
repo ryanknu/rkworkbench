@@ -1,7 +1,7 @@
 use std::cell::{Ref, RefCell};
 use std::cmp::PartialEq;
 use std::env::home_dir;
-use std::fmt::{format, Debug};
+use std::fmt::Debug;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use serde::{Deserialize, Serialize};
@@ -200,9 +200,9 @@ pub struct FileBackedTitle {
 }
 
 impl MediaState {
-    fn is_in_output_dir(&self, e: &walkdir::DirEntry) -> bool {
+    fn is_in_output_dir(&self, path: &Path) -> bool {
         let out_dir = self.media_dir.join("output");
-        e.path().starts_with(out_dir)
+        path.starts_with(out_dir)
     }
 
     fn is_mkv(&self, e: walkdir::DirEntry) -> Option<walkdir::DirEntry> {
@@ -233,7 +233,7 @@ impl MediaState {
             let (file_name, folder_name) = (file_name.as_os_str().to_str().unwrap_or_default(), folder_name.as_os_str().to_str().unwrap_or_default());
 
             // If it's in the output directory, we know that it's named to follow semantic conventions.
-            let mapped_media = if self.is_in_output_dir(&entry) {
+            let mapped_media = if self.is_in_output_dir(entry.path()) {
                 let file_name = file_name.to_owned().replace(".mkv", "");
                 Some(MediaId::SemanticNameKey(format!("{folder_name} - {file_name}")))
             } else {
@@ -309,6 +309,71 @@ impl MediaState {
         }
 
         None
+    }
+
+    pub fn is_on_disk(&self, id: &MappableMediaId) -> bool {
+        let titles = self.file_backed_titles.borrow();
+        titles.iter().any(|title| {
+            if !self.is_in_output_dir(&title.path) {
+                return false;
+            }
+            match &title.mapped_media {
+                Some(MediaId::TvEpisode(eid)) => {
+                    if let MappableMediaId::TvEpisode(id) = id {
+                        return eid == id;
+                    }
+                }
+                Some(MediaId::FilmVideo(fid)) => {
+                    if let MappableMediaId::FilmVideo(id) = id {
+                        return fid == id;
+                    }
+                }
+                Some(MediaId::SemanticNameKey(key)) => {
+                    match id {
+                        MappableMediaId::TvEpisode(episode_id) => {
+                            if let Some(episode) = self.tv_show_episodes.borrow().iter().find(|e| e.id == *episode_id) {
+                                if let Some(show_key) = self.tv_show_key(&episode.show_id) {
+                                    let expected_key = format!("{} - {}", show_key, episode.series_key);
+                                    if *key == expected_key { return true; }
+                                    let expected_key_with_name = format!("{} - {} - {}", show_key, episode.series_key, episode.name);
+                                    return *key == expected_key_with_name;
+                                }
+                            }
+                        }
+                        MappableMediaId::FilmVideo(film_video_id) => {
+                            if let Some(video) = self.film_videos.borrow().iter().find(|v| v.id == *film_video_id) {
+                                let expected_key = format!("{} - {}", video.film_key, video.film_key);
+                                if *key == expected_key { return true; }
+                                let expected_key_with_name = format!("{} - {}", video.film_key, video.name);
+                                return *key == expected_key_with_name;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            false
+        })
+    }
+
+    pub fn is_mapped_to_file(&self, id: &MappableMediaId) -> bool {
+        let titles = self.file_backed_titles.borrow();
+        titles.iter().any(|title| {
+            match &title.mapped_media {
+                Some(MediaId::TvEpisode(eid)) => {
+                    if let MappableMediaId::TvEpisode(id) = id {
+                        return eid == id;
+                    }
+                }
+                Some(MediaId::FilmVideo(fid)) => {
+                    if let MappableMediaId::FilmVideo(id) = id {
+                        return fid == id;
+                    }
+                }
+                _ => {}
+            }
+            false
+        })
     }
 
     pub fn has_confirmed_tmdb_api_key(&self) -> bool {

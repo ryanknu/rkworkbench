@@ -1,5 +1,5 @@
 use serde::Serialize;
-use crate::media::{MappableMediaId, FileBackedTitleId, MediaState, TvEpisodeId};
+use crate::media::{MappableMediaId, FileBackedTitleId, MediaState, TvEpisodeId, FilmVideoId};
 use crate::requests::IncomingRequest;
 use crate::ui::TreeItemChange::ChangeColor;
 
@@ -71,35 +71,51 @@ pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
 }
 
 pub fn build_tv_shows_tree(state: &MediaState) -> Vec<UiEvent> {
-    // TODO: Identify mapped media here.
-    state.tv_show_episodes().iter().map(|episode|
+    state.tv_show_episodes().iter().map(|episode| {
+        let id = MappableMediaId::TvEpisode(episode.id.clone());
+        let color = if state.is_on_disk(&id) {
+            "green".to_owned()
+        } else if state.is_mapped_to_file(&id) {
+            "orange".to_owned()
+        } else {
+            "Default".to_owned()
+        };
+
         UiEvent::AddTreeItem {
             tree: Tree::TvShows,
             item: TreeItem {
                 id: episode.id().to_owned(),
                 parent_text: state.tv_show_key(episode.show_id()).unwrap_or(String::from("ERROR")),
                 text: format!("{} - {}", episode.series_key(), episode.name()),
-                color: "Default".to_owned(),
+                color,
             },
             after: None,
         }
-    ).collect()
+    }).collect()
 }
 
 pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
-    // TODO: Identify mapped media here.
-    state.film_videos().iter().map(|film|
+    state.film_videos().iter().map(|film| {
+        let id = MappableMediaId::FilmVideo(film.id.clone());
+        let color = if state.is_on_disk(&id) {
+            "green".to_owned()
+        } else if state.is_mapped_to_file(&id) {
+            "orange".to_owned()
+        } else {
+            "Default".to_owned()
+        };
+
         UiEvent::AddTreeItem {
             tree: Tree::Films,
             item: TreeItem {
                 id: film.id().to_owned(),
                 parent_text: film.film_key().to_owned(),
                 text: film.name().to_owned(),
-                color: "Default".to_owned(),
+                color,
             },
             after: None,
         }
-    ).collect()
+    }).collect()
 }
 
 pub fn get_garbage_size(state: &MediaState) -> UiEvent {
@@ -108,20 +124,24 @@ pub fn get_garbage_size(state: &MediaState) -> UiEvent {
     }
 }
 
-pub fn get_tree_change_action_for_mappable(id: MappableMediaId, is_mapped: bool) -> UiEvent {
+pub fn get_tree_change_action_for_mappable(state: &MediaState, id: MappableMediaId) -> UiEvent {
     let tree = match &id {
         MappableMediaId::TvEpisode(_) => Tree::TvShows,
         MappableMediaId::FilmVideo(_) => Tree::Films,
     };
 
+    let color = if state.is_on_disk(&id) {
+        "green".to_owned()
+    } else if state.is_mapped_to_file(&id) {
+        "orange".to_owned()
+    } else {
+        "Default".to_owned()
+    };
+
     UiEvent::ChangeTreeItem {
         tree,
         id: id.id().to_owned(),
-        change: ChangeColor(if is_mapped {
-            "orange".to_owned()
-        } else {
-            "Default".to_owned()
-        })
+        change: ChangeColor(color)
     }
 }
 
@@ -137,27 +157,45 @@ pub fn get_tree_change_action_for_mapping_file(id: FileBackedTitleId, is_mapped:
     }
 }
 
-pub fn get_add_tree_item_for_film(id: String, film_name: String, description: String,) -> UiEvent {
+pub fn get_add_tree_item_for_film(state: &MediaState, id: String, film_name: String, description: String,) -> UiEvent {
+    let mappable_id = MappableMediaId::FilmVideo(FilmVideoId(id.clone()));
+    let color = if state.is_on_disk(&mappable_id) {
+        "green".to_owned()
+    } else if state.is_mapped_to_file(&mappable_id) {
+        "orange".to_owned()
+    } else {
+        "Default".to_owned()
+    };
+
     UiEvent::AddTreeItem {
         tree: Tree::Films,
         item: TreeItem {
             id,
             parent_text: film_name,
             text: description,
-            color: "Default".to_owned(),
+            color,
         },
         after: None
     }
 }
 
-pub fn get_add_tree_item_for_tv_show(id: String, show_name: String, description: String,) -> UiEvent {
+pub fn get_add_tree_item_for_tv_show(state: &MediaState, id: String, show_name: String, description: String,) -> UiEvent {
+    let mappable_id = MappableMediaId::TvEpisode(TvEpisodeId(id.clone()));
+    let color = if state.is_on_disk(&mappable_id) {
+        "green".to_owned()
+    } else if state.is_mapped_to_file(&mappable_id) {
+        "orange".to_owned()
+    } else {
+        "Default".to_owned()
+    };
+
     UiEvent::AddTreeItem {
         tree: Tree::TvShows,
         item: TreeItem {
             id,
             parent_text: show_name,
             text: description,
-            color: "Default".to_owned(),
+            color,
         },
         after: None
     }
