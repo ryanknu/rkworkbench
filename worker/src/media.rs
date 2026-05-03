@@ -273,8 +273,18 @@ impl MediaState {
 
             // If it's in the output directory, we know that it's named to follow semantic conventions.
             let mapped_media = if self.is_in_output_dir(entry.path()) {
-                let file_name = file_name.to_owned().replace(".mkv", "");
-                Some(MediaId::SemanticNameKey(format!("{folder_name} - {file_name}")))
+                let file_name_clean = file_name.replace(".mkv", "");
+                let out_dir = self.media_dir.join("output");
+                if let Ok(rel) = path.strip_prefix(&out_dir) {
+                    let rel_parts: Vec<_> = rel.components().map(|c| c.as_os_str().to_str().unwrap_or_default()).collect();
+                    if rel_parts.len() == 3 && rel_parts[1] == "extras" {
+                        Some(MediaId::SemanticNameKey(format!("{} - {}", rel_parts[0], file_name_clean)))
+                    } else {
+                        Some(MediaId::SemanticNameKey(format!("{folder_name} - {file_name_clean}")))
+                    }
+                } else {
+                    Some(MediaId::SemanticNameKey(format!("{folder_name} - {file_name_clean}")))
+                }
             } else {
                 None
             };
@@ -408,8 +418,10 @@ impl MediaState {
                         }
                         MappableMediaId::FilmVideo(film_video_id) => {
                             if let Some(video) = self.film_videos.borrow().iter().find(|v| v.id == *film_video_id) {
-                                let expected_key = format!("{} - {}", video.film_key, video.film_key);
-                                if *key == expected_key { return true; }
+                                if video.ty == "FeaturePresentation" {
+                                    let expected_key = format!("{} - {}", video.film_key, video.film_key);
+                                    if *key == expected_key { return true; }
+                                }
                                 let expected_key_with_name = format!("{} - {}", video.film_key, video.name);
                                 return *key == expected_key_with_name;
                             }
@@ -648,11 +660,18 @@ impl FilmVideo {
     }
 
     pub fn get_ideal_storage_path(&self) -> Vec<String> {
-        // This is for MKV's of FP only
-        vec![
-            self.film_key.to_owned(),
-            format!("{}.mkv", self.film_key)
-        ]
+        if self.ty == "FeaturePresentation" {
+            vec![
+                self.film_key.to_owned(),
+                format!("{}.mkv", self.film_key)
+            ]
+        } else {
+            vec![
+                self.film_key.to_owned(),
+                "extras".to_string(),
+                format!("{}.mkv", self.name)
+            ]
+        }
     }
 }
 

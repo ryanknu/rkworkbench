@@ -113,9 +113,6 @@ void MainWindow::_changeTreeItemColor(std::string treeName, std::string id, std:
     auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
     auto items = model->match(model->index(0, 0), Qt::UserRole, q(id), 1, Qt::MatchExactly | Qt::MatchRecursive);
 
-    // TODO: If the item is selected, we should unselect it so you can see the new color.
-    tree->clearSelection();
-
     if (!items.empty() && items.at(0).isValid()) {
         auto item = model->itemFromIndex(items.at(0));
         item->setForeground(QBrush(QColor(color.c_str())));
