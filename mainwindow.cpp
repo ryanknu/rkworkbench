@@ -442,12 +442,12 @@ MainWindow::MainWindow(QWidget *parent)
             player->setSource(QUrl());
 
             auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-            /// Intentionally removed.
+            delete_title(titleId.c_str());
         });
 
         connect(unDeleteAction, &QAction::triggered, [&]() {
             auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-            /// Intentionally removed
+            undelete_title(titleId.c_str());
         });
 
         menu.exec(ui->disksTree->viewport()->mapToGlobal(pos));

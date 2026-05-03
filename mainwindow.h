@@ -88,4 +88,6 @@ extern "C" {
 	void confirm_film_video_plays(const char* id);
 	void unidentify_tv_episode(const char* id);
 	void reencode_tv_episode(const char* id);
+	void delete_title(const char* id);
+	void undelete_title(const char* id);
 }

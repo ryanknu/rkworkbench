@@ -21,6 +21,8 @@ pub enum IncomingRequest {
     ConfirmPlay(MappableMediaId),
     DeleteTvShow(String),
     DeleteTvSeason(String, usize),
+    DeleteTitle(FileBackedTitleId),
+    UndeleteTitle(FileBackedTitleId),
     Unidentify(TvEpisodeId),
     ReencodeRequest(TvEpisodeId),
 }
@@ -475,6 +477,89 @@ pub fn delete_tv_season(media: &MediaState, id: String, season: usize) -> Vec<Ui
     }
 
     media.delete_tv_season(&show_id, season);
+    events.push(get_garbage_size(&media));
+    events
+}
+
+pub fn delete_title(media: &MediaState, id: FileBackedTitleId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut events = Vec::new();
+
+    let mut title_to_update = None;
+    {
+        let titles = media.file_backed_titles.borrow();
+        if let Some(title) = titles.iter().find(|t| t.id == id) {
+            title_to_update = Some((title.path.clone(), title.file_name.clone()));
+        }
+    }
+
+    if let Some((old_path, old_file_name)) = title_to_update {
+        let mut new_file_name = old_file_name;
+        new_file_name.push_str(".d");
+        let mut new_path = old_path.clone();
+        new_path.set_file_name(&new_file_name);
+
+        println!("[rust] Renaming {:?} to {:?}", old_path, new_path);
+        if let Err(e) = fs::rename(&old_path, &new_path) {
+            println!("Error renaming file: {:?}", e);
+            return vec![];
+        }
+
+        // Update state
+        if let Some(title) = media.file_backed_titles.borrow_mut().iter_mut().find(|t| t.id == id) {
+            title.path = new_path;
+            title.file_name = new_file_name;
+        }
+
+        events.push(UiEvent::ChangeTreeItem {
+            tree: Tree::Files,
+            id: id.0.clone(),
+            change: ChangeColor("red".to_owned()),
+        });
+    }
+
+    events.push(get_garbage_size(&media));
+    events
+}
+
+pub fn undelete_title(media: &MediaState, id: FileBackedTitleId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut events = Vec::new();
+
+    let mut title_to_update = None;
+    {
+        let titles = media.file_backed_titles.borrow();
+        if let Some(title) = titles.iter().find(|t| t.id == id) {
+            if title.file_name.ends_with(".d") {
+                title_to_update = Some((title.path.clone(), title.file_name.clone(), title.is_mapped()));
+            }
+        }
+    }
+
+    if let Some((old_path, old_file_name, is_mapped)) = title_to_update {
+        let new_file_name = old_file_name[..old_file_name.len() - 2].to_owned();
+        let mut new_path = old_path.clone();
+        new_path.set_file_name(&new_file_name);
+
+        println!("[rust] Renaming {:?} to {:?}", old_path, new_path);
+        if let Err(e) = fs::rename(&old_path, &new_path) {
+            println!("Error renaming file: {:?}", e);
+            return vec![];
+        }
+
+        // Update state
+        if let Some(title) = media.file_backed_titles.borrow_mut().iter_mut().find(|t| t.id == id) {
+            title.path = new_path;
+            title.file_name = new_file_name;
+        }
+
+        events.push(UiEvent::ChangeTreeItem {
+            tree: Tree::Files,
+            id: id.0.clone(),
+            change: ChangeColor(if is_mapped { "orange".to_owned() } else { "Default".to_owned() }),
+        });
+    }
+
     events.push(get_garbage_size(&media));
     events
 }

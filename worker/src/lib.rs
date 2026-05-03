@@ -93,6 +93,8 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 ConfirmPlay(id) => requests::confirm_play(&MEDIA, id),
                 DeleteTvShow(id) => requests::delete_tv_show(&MEDIA, id),
                 DeleteTvSeason(id, season) => requests::delete_tv_season(&MEDIA, id, season),
+                DeleteTitle(id) => requests::delete_title(&MEDIA, id),
+                UndeleteTitle(id) => requests::undelete_title(&MEDIA, id),
                 Unidentify(id) => requests::unidentify_tv_episode(&MEDIA, id),
                 _ => vec![],
             };
@@ -313,4 +315,22 @@ pub unsafe extern "C" fn free_string(ptr: *mut c_char) {
     unsafe {
         drop(CString::from_raw(ptr));
     }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn delete_title(title_id: *const c_char) {
+    println!("[rust] delete_title called");
+
+    let title_id = FileBackedTitleId(cstr(title_id));
+
+    SENDER.get().map(|s| s.lock().unwrap().send(DeleteTitle(title_id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn undelete_title(title_id: *const c_char) {
+    println!("[rust] undelete_title called");
+
+    let title_id = FileBackedTitleId(cstr(title_id));
+
+    SENDER.get().map(|s| s.lock().unwrap().send(UndeleteTitle(title_id)));
 }
