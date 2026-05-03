@@ -1,4 +1,4 @@
-use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, MediaId, TvShow, TvShowEpisode, TvShowId, TvEpisodeId};
+use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, FilmVideoId, MediaId, TvShow, TvShowEpisode, TvShowId, TvEpisodeId};
 use crate::tmdb::{TmdbItem, TmdbTvShow, TmdbTvShowSeason};
 use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, Tree, TreeItem, TreeItemChange::ChangeColor, UiEvent};
 use serde::{Deserialize, Serialize};
@@ -21,10 +21,14 @@ pub enum IncomingRequest {
     ConfirmPlay(MappableMediaId),
     DeleteTvShow(String),
     DeleteTvSeason(String, usize),
+    DeleteFilm(String),
+    DeleteFilmVideo(String),
     DeleteTitle(FileBackedTitleId),
     UndeleteTitle(FileBackedTitleId),
     Unidentify(TvEpisodeId),
+    UnidentifyFilm(FilmVideoId),
     ReencodeRequest(TvEpisodeId),
+    ReencodeFilmRequest(FilmVideoId),
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -314,21 +318,17 @@ pub fn rename_identified(media: &MediaState) -> Vec<UiEvent> {
 pub fn rsync_show(media: &MediaState, id: String) -> Vec<UiEvent> {
     let media = unlock_media!(media);
 
-    let folder_name = if let Some(show) = media.get_show_by_id(&TvShowId(id.clone())) {
-        Some(show.show_key.clone())
+    let (folder_name, sub_dir) = if let Some(show) = media.get_show_by_id(&TvShowId(id.clone())) {
+        (show.show_key.clone(), "tv")
     } else if let Some(film) = media.get_film_by_id(&FilmId(id.clone())) {
-        Some(film.film_key().to_owned())
+        (film.film_key().to_owned(), "movies")
     } else {
-        None
-    };
-
-    let Some(folder_name) = folder_name else {
         println!("Media not found for rsync: {:?}", id);
         return vec![];
     };
 
     let source = media.media_dir.join("output").join(&folder_name);
-    let destination = format!("root@10.4.6.2:/mnt/user/emby/tv/{}/", folder_name);
+    let destination = format!("root@10.4.6.2:/mnt/user/emby/{}/{}/", sub_dir, folder_name);
 
     println!("[rust] rsyncing {:?} to {:?}", source, destination);
 
@@ -718,5 +718,232 @@ pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent> 
 
     let mut events = vec![get_garbage_size(&media)];
     events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::TvEpisode(id)));
+    events
+}
+
+pub fn unidentify_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut events = Vec::new();
+
+    let mut info = None;
+    {
+        let mappable_id = MappableMediaId::FilmVideo(id.clone());
+        if let Some(title_id) = media.get_title_id_for_mappable(&mappable_id) {
+            let videos = media.film_videos.borrow();
+            if let Some(video) = videos.iter().find(|v| v.id == id) {
+                let titles = media.file_backed_titles.borrow();
+                if let Some(title) = titles.iter().find(|t| t.id == title_id) {
+                    info = Some((title.id.clone(), title.path.clone(), video.film_name.clone(), video.name.clone()));
+                }
+            }
+        }
+    }
+
+    if let Some((title_id, source_path, film_name, video_name)) = info {
+        let dest_folder = media.media_dir.join("output").join("Lost & Found");
+        if let Err(e) = fs::create_dir_all(&dest_folder) {
+            println!("Error creating directory {:?}: {:?}", dest_folder, e);
+            return vec![];
+        }
+
+        let dest_file_name = if video_name == "Feature Presentation" {
+            format!("{} - {}.mkv", film_name, film_name)
+        } else {
+            format!("{} - {}.mkv", film_name, video_name)
+        };
+        let dest_path = dest_folder.join(dest_file_name.clone());
+
+        println!("Moving {:?} to {:?}", source_path, dest_path);
+        if let Err(e) = fs::rename(&source_path, &dest_path) {
+            println!("Error moving file {:?} to {:?}: {:?}", source_path, dest_path, e);
+            return vec![];
+        }
+
+        // Update state
+        if let Some(title) = media.file_backed_titles.borrow_mut().iter_mut().find(|t| t.id == title_id) {
+            title.path = dest_path;
+            title.mapped_media = None;
+            title.collection = "Lost & Found".to_owned();
+            title.file_name = dest_file_name;
+        }
+
+        // UI events
+        events.push(UiEvent::RemoveTreeItemById {
+            tree: Tree::Films,
+            id: id.0.clone(),
+        });
+
+        if let Some(title) = media.file_backed_titles.borrow().iter().find(|t| t.id == title_id) {
+             let confirmed = media.confirmed_plays.borrow();
+             events.push(UiEvent::AddTreeItem {
+                tree: Tree::Files,
+                item: TreeItem {
+                    id: title.id.0.clone(),
+                    parent_id: None,
+                    parent_text: title.collection.clone(),
+                    text: title.file_name.clone(),
+                    color: if title.marked_for_deletion(&confirmed, &media.media_dir) { "red".to_owned() } else { "Default".to_owned() },
+                },
+                after: None,
+            });
+        }
+    }
+
+    events.push(get_garbage_size(&media));
+    events
+}
+
+pub fn reencode_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+
+    // 1. Find the video and its current path
+    let video_info = {
+        let videos = media.film_videos.borrow();
+        videos.iter().find(|v| v.id == id).map(|v| v.get_ideal_storage_path())
+    };
+
+    let Some(current_rel_path) = video_info else {
+        println!("Video info not found for reencode: {:?}", id);
+        return vec![];
+    };
+
+    let mut current_path = media.media_dir.join("output");
+    for part in &current_rel_path {
+        current_path = current_path.join(part);
+    }
+
+    if !current_path.exists() {
+        println!("File not found for reencode: {:?}", current_path);
+        return vec![];
+    }
+
+    // 2. Determine the "originals" path
+    let mut originals_path = media.media_dir.join("originals");
+    for part in &current_rel_path {
+        originals_path = originals_path.join(part);
+    }
+
+    // 3. Move file to originals
+    if let Some(parent) = originals_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            println!("Error creating originals directory {:?}: {:?}", parent, e);
+            return vec![];
+        }
+    }
+
+    println!("Moving {:?} to {:?}", current_path, originals_path);
+    if let Err(e) = fs::rename(&current_path, &originals_path) {
+        println!("Error moving file to originals: {:?}", e);
+        return vec![];
+    }
+
+    // 4. Run ffmpeg
+    println!("Running ffmpeg on {:?}", originals_path);
+    let status = std::process::Command::new("ffmpeg")
+        .arg("-i")
+        .arg(&originals_path)
+        .arg("-map")
+        .arg("0")
+        .arg("-c")
+        .arg("copy")
+        .arg("-c:v")
+        .arg("libx265")
+        .arg("-crf")
+        .arg("18")
+        .arg(&current_path)
+        .status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("ffmpeg successful for {:?}", current_path);
+            if let Ok(metadata) = fs::metadata(&current_path) {
+                let mut titles = media.file_backed_titles.borrow_mut();
+                if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
+                    title.file_size = metadata.len();
+                }
+            }
+        }
+        Ok(s) => {
+            println!("ffmpeg failed with status: {:?}", s);
+        }
+        Err(e) => {
+            println!("failed to execute ffmpeg: {:?}", e);
+        }
+    }
+
+    let mut events = vec![get_garbage_size(&media)];
+    events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::FilmVideo(id)));
+    events
+}
+
+pub fn delete_film(media: &MediaState, id: String) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let raw_id = if id.starts_with("film.") { id[5..].to_owned() } else { id.clone() };
+    let film_id = FilmId(raw_id.clone());
+
+    let mut events = Vec::new();
+
+    // 1. Identify all videos to be removed and their mappings
+    let mut videos_to_remove = Vec::new();
+    {
+        let videos = media.film_videos.borrow();
+        for v in videos.iter() {
+            if v.film_id == film_id {
+                videos_to_remove.push(v.id.clone());
+            }
+        }
+    }
+
+    // 2. Unmap files in Files tree
+    {
+        let mut titles = media.file_backed_titles.borrow_mut();
+        for title in titles.iter_mut() {
+            if let Some(MediaId::FilmVideo(v_id)) = &title.mapped_media {
+                if videos_to_remove.contains(v_id) {
+                    title.mapped_media = None;
+                    events.push(get_tree_change_action_for_mapping_file(title.id.clone(), false));
+                }
+            }
+        }
+    }
+
+    // 3. Remove film from tree
+    events.push(UiEvent::RemoveTreeItemById {
+        tree: Tree::Films,
+        id: raw_id,
+    });
+
+    media.delete_film(&film_id);
+    events.push(get_garbage_size(&media));
+    events
+}
+
+pub fn delete_film_video(media: &MediaState, id: String) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let video_id = FilmVideoId(id.clone());
+
+    let mut events = Vec::new();
+
+    // 1. Unmap files
+    {
+        let mut titles = media.file_backed_titles.borrow_mut();
+        for title in titles.iter_mut() {
+            if let Some(MediaId::FilmVideo(v_id)) = &title.mapped_media {
+                if *v_id == video_id {
+                    title.mapped_media = None;
+                    events.push(get_tree_change_action_for_mapping_file(title.id.clone(), false));
+                }
+            }
+        }
+    }
+
+    // 2. Remove from tree
+    events.push(UiEvent::RemoveTreeItemById {
+        tree: Tree::Films,
+        id,
+    });
+
+    media.delete_film_video(&video_id);
+    events.push(get_garbage_size(&media));
     events
 }

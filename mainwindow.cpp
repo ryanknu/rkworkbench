@@ -570,10 +570,43 @@ MainWindow::MainWindow(QWidget *parent)
             filmVideoId = id;
         }
 
+        if (filmVideoId.empty()) {
+            auto deleteMenu = menu.addMenu(q("Remove Metadata"));
+            auto deleteFilmAction = deleteMenu->addAction(q("Remove Film"));
+            connect(deleteFilmAction, &QAction::triggered, [filmId]() {
+                delete_film(filmId.c_str());
+            });
+        }
+
         if (!filmVideoId.empty()) {
             auto confirmAction = menu.addAction(q("Confirm Plays"));
+            auto unidentifyAction = menu.addAction(q("Unidentify"));
+            auto reencodeAction = menu.addAction(q("Re-encode (ffmpeg)"));
+
+            auto deleteMenu = menu.addMenu(q("Remove Metadata"));
+            auto deleteFilmAction = deleteMenu->addAction(q("Remove Film"));
+            auto deleteVideoAction = deleteMenu->addAction(q("Remove Video"));
+
+            connect(deleteFilmAction, &QAction::triggered, [filmId]() {
+                delete_film(filmId.c_str());
+            });
+
+            connect(deleteVideoAction, &QAction::triggered, [filmVideoId]() {
+                delete_film_video(filmVideoId.c_str());
+            });
+
             connect(confirmAction, &QAction::triggered, [filmVideoId]() {
                 confirm_film_video_plays(filmVideoId.c_str());
+            });
+
+            connect(unidentifyAction, &QAction::triggered, [filmVideoId]() {
+                unidentify_film_video(filmVideoId.c_str());
+            });
+
+            connect(reencodeAction, &QAction::triggered, [this, filmVideoId]() {
+                reencode_film_video(filmVideoId.c_str());
+                this->ffmpegQueueCount++;
+                this->_updateFfmpegStatus();
             });
         }
 
@@ -763,13 +796,25 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
             }
+            if (req.contains("ReencodeFilmRequest")) {
+                std::string id = req["ReencodeFilmRequest"][0].get<std::string>();
+                auto fileName = get_filename_for_film_video_id(id.c_str());
+                if (fileName) {
+                    currentEncodingFile = fileName;
+                    free_string(fileName);
+                }
+
+                ffmpegQueueCount = std::max(0, ffmpegQueueCount - 1);
+                ffmpegActiveCount++;
+                _updateFfmpegStatus();
+            }
         }
     } catch (...) {}
 
     try {
         if (m.contains("CommandCompleted")) {
             auto req = m["CommandCompleted"];
-            if (req.contains("ReencodeRequest")) {
+            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest")) {
                 ffmpegActiveCount = std::max(0, ffmpegActiveCount - 1);
                 if (ffmpegActiveCount == 0) {
                     currentEncodingFile = "";

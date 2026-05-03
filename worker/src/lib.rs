@@ -93,9 +93,12 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 ConfirmPlay(id) => requests::confirm_play(&MEDIA, id),
                 DeleteTvShow(id) => requests::delete_tv_show(&MEDIA, id),
                 DeleteTvSeason(id, season) => requests::delete_tv_season(&MEDIA, id, season),
+                DeleteFilm(id) => requests::delete_film(&MEDIA, id),
+                DeleteFilmVideo(id) => requests::delete_film_video(&MEDIA, id),
                 DeleteTitle(id) => requests::delete_title(&MEDIA, id),
                 UndeleteTitle(id) => requests::undelete_title(&MEDIA, id),
                 Unidentify(id) => requests::unidentify_tv_episode(&MEDIA, id),
+                UnidentifyFilm(id) => requests::unidentify_film_video(&MEDIA, id),
                 _ => vec![],
             };
 
@@ -121,6 +124,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
             // Process `message`
             let events = match message.clone() {
                 ReencodeRequest(id) => requests::reencode_tv_episode(&MEDIA, id),
+                ReencodeFilmRequest(id) => requests::reencode_film_video(&MEDIA, id),
                 _ => vec![],
             };
 
@@ -245,6 +249,42 @@ pub extern "C" fn delete_tv_season(show_id: *const c_char, season_number: usize)
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn delete_film(film_id: *const c_char) {
+    println!("[rust] delete_film called");
+
+    let film_id = cstr(film_id);
+
+    SENDER.get().map(|s| s.lock().unwrap().send(DeleteFilm(film_id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn delete_film_video(video_id: *const c_char) {
+    println!("[rust] delete_film_video called");
+
+    let video_id = cstr(video_id);
+
+    SENDER.get().map(|s| s.lock().unwrap().send(DeleteFilmVideo(video_id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn unidentify_film_video(id: *const c_char) {
+    println!("[rust] unidentify_film_video called");
+
+    let id = FilmVideoId(cstr(id));
+
+    SENDER.get().map(|s| s.lock().unwrap().send(UnidentifyFilm(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn reencode_film_video(id: *const c_char) {
+    println!("[rust] reencode_film_video called");
+
+    let id = FilmVideoId(cstr(id));
+
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeFilmRequest(id)));
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn unidentify_tv_episode(id: *const c_char) {
     println!("[rust] unidentify_tv_episode called");
 
@@ -295,6 +335,30 @@ pub extern "C" fn get_filename_for_tv_episode_id(id: *const c_char) -> *mut c_ch
             let s = format!("{}.mkv", series_key);
             let c_str = CString::new(s).unwrap();
             c_str.into_raw()
+        }
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Returns the filename for a given film video id.
+#[unsafe(no_mangle)]
+pub extern "C" fn get_filename_for_film_video_id(id: *const c_char) -> *mut c_char {
+    let id = FilmVideoId(cstr(id));
+    let media = MEDIA.get().unwrap().lock().unwrap();
+
+    let video_info = {
+        let videos = media.film_videos.borrow();
+        videos.iter().find(|v| v.id == id).map(|v| v.get_ideal_storage_path())
+    };
+
+    match video_info {
+        Some(rel_path) => {
+            if let Some(last) = rel_path.last() {
+                let c_str = CString::new(last.clone()).unwrap();
+                c_str.into_raw()
+            } else {
+                std::ptr::null_mut()
+            }
         }
         None => std::ptr::null_mut(),
     }

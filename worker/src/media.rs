@@ -271,6 +271,10 @@ impl MediaState {
 
             let (file_name, folder_name) = (file_name.as_os_str().to_str().unwrap_or_default(), folder_name.as_os_str().to_str().unwrap_or_default());
 
+            if self.is_in_originals_dir(entry.path()) {
+                continue;
+            }
+
             // If it's in the output directory, we know that it's named to follow semantic conventions.
             let mapped_media = if self.is_in_output_dir(entry.path()) {
                 let file_name_clean = file_name.replace(".mkv", "");
@@ -555,6 +559,31 @@ impl MediaState {
 
         // Remove from memory
         self.tv_show_episodes.borrow_mut().retain(|e| !(e.show_id == *show_id && e.season_number == season_number));
+    }
+
+    pub fn delete_film(&self, film_id: &FilmId) {
+        let tmdb_id = &film_id.0;
+        let film_file = self.config_dir.join("films").join(format!("{}.json", tmdb_id));
+        if film_file.exists() {
+            let _ = std::fs::remove_file(film_file);
+        }
+
+        // Also remove videos
+        let videos_file = self.config_dir.join("films").join(format!("{}-videos.json", tmdb_id));
+        if videos_file.exists() {
+            let _ = std::fs::remove_file(videos_file);
+        }
+
+        // Remove from memory
+        self.films.borrow_mut().retain(|f| f.id != *film_id);
+        self.film_videos.borrow_mut().retain(|v| v.film_id != *film_id);
+    }
+
+    pub fn delete_film_video(&self, video_id: &FilmVideoId) {
+        // Film videos aren't usually stored in individual files, they come from the -videos.json
+        // So we just remove from memory for now. 
+        // TODO: If we want it to persist, we'd need to rewrite the -videos.json file.
+        self.film_videos.borrow_mut().retain(|v| v.id != *video_id);
     }
 }
 

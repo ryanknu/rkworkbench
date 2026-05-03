@@ -72,6 +72,7 @@ extern "C" {
 	// Fast requests to the backend
 	const char* get_filename_for_title_id(const char* id);
 	const char* get_filename_for_tv_episode_id(const char* id);
+	const char* get_filename_for_film_video_id(const char* id);
 	void free_string(const char* str);
 
 	// Commands that the worker thread can work.
@@ -82,12 +83,16 @@ extern "C" {
 	void rsync_show(const char* show_id);
 	void delete_tv_show(const char* show_id);
 	void delete_tv_season(const char* show_id, size_t season_number);
+	void delete_film(const char* film_id);
+	void delete_film_video(const char* video_id);
 	void map_tv_episode(const char* from, const char* to);
 	void map_film_video(const char* from, const char* to);
 	void confirm_tv_episode_plays(const char* id);
 	void confirm_film_video_plays(const char* id);
 	void unidentify_tv_episode(const char* id);
+	void unidentify_film_video(const char* id);
 	void reencode_tv_episode(const char* id);
+	void reencode_film_video(const char* id);
 	void delete_title(const char* id);
 	void undelete_title(const char* id);
 }
