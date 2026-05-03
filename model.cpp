@@ -29,9 +29,6 @@ AppModel::AppModel(std::string outDir)
 	// Initialize
 	_createDirectories();
 	_readApiKey();
-	scanLocalTmdbData("*");
-	scanLocalTitles();
-    scanLocalEpisodes();
 }
 
 fs::path AppModel::configDirPath()
@@ -178,214 +175,6 @@ bool detectSeasonJson(const fs::path& path) {
     static const std::regex pattern(R"(^\d+-S\d+\.json$)");
 
     return std::regex_match(filename, pattern);
-}
-
-/**
- * Scans the local filesystem for cached TMBD data.
- */
-void AppModel::scanLocalTmdbData(const std::string& filter)
-{
-    struct TvShowData {
-        int id;
-        std::string first_air_date;
-        std::string name;
-        std::string original_name;
-    };
-
-    struct TvEpisodeData {
-        int id;
-        int episode_number;
-        int season_number;
-        int show_id;
-        std::string name;
-    };
-
-    for (const auto& entry : fs::directory_iterator(tvDirectory())) {
-        if (filter != "*" && !entry.path().string().contains(filter)) {
-            continue;
-        }
-
-        if (detectShowJson(entry.path())) {
-            try {
-                std::ifstream ifs(entry.path());
-                json jf = json::parse(ifs);
-
-                TvShowData parsed {
-                    jf["id"].get<int>(),
-                    jf["first_air_date"].get<std::string>(),
-                    jf["name"].get<std::string>(),
-                    jf.contains("original_name") ? jf["original_name"].get<std::string>() : jf["name"].get<std::string>()
-                };
-
-                // WARNING: Show originalTitle is used for remote naming convention. Do not change it without
-                //          changing all pathing operations.
-                auto title = std::format("{} ({})", parsed.name, parsed.first_air_date.substr(0, 4));
-                auto originalTitle = std::format("{} ({}) [tmdb={}]", parsed.original_name, parsed.first_air_date.substr(0, 4), parsed.id);
-                auto show = std::make_unique<Show>(std::format("show.{}", parsed.id), parsed.id, title, originalTitle, entry.path());
-
-                for (auto& season : jf["seasons"]) {
-                    show->pushSeason(season["season_number"].get<int>());
-                }
-
-                _mShows.emplace(show->id, std::move(show));
-            } catch (...) {
-                // Put a dummy show & episode in the tree so we can see the error.
-                auto showId = entry.path().filename().string();
-                auto show = std::make_unique<Show>(std::format("show.{}", showId), 0, std::format("{} ERROR", showId), showId, entry.path());
-                _mShows.emplace(show->id, std::move(show));
-
-                auto episode = std::make_unique<Episode>(
-                    std::format("ep.{}", showId),
-                    0,
-                    0,
-                    std::format("show.{}", showId),
-                    std::format("{} ERROR", showId),
-                    entry.path()
-                );
-
-                _mEpisodes.emplace(episode->id, std::move(episode));
-            }
-        }
-
-        if (detectSeasonJson(entry.path())) {
-            std::ifstream ifs(entry.path());
-            json jf = json::parse(ifs);
-
-            for (auto& epjson : jf["episodes"]) {
-                TvEpisodeData parsed {
-                    epjson["id"].get<int>(),
-                    epjson["episode_number"].get<int>(),
-                    epjson["season_number"].get<int>(),
-                    epjson["show_id"].get<int>(),
-                    epjson["name"].get<std::string>()
-                };
-
-                auto episode = std::make_unique<Episode>(
-                    std::format("ep.{}", parsed.id),
-                    parsed.season_number,
-                    parsed.episode_number,
-                    std::format("show.{}", parsed.show_id),
-                    parsed.name,
-                    entry.path()
-                );
-
-                _mEpisodes.emplace(episode->id, std::move(episode));
-            }
-        }
-    }
-}
-
-void AppModel::removeLocalSeason(std::string showId, int seasonNumber) {
-    if (_mShows.contains(showId)) {
-        auto& show = *_mShows[showId];
-        show.seasons.erase(std::remove(show.seasons.begin(), show.seasons.end(), seasonNumber), show.seasons.end());
-    }
-    // TODO: Don't allow this if local media would be orphaned.
-    for (auto el = _mEpisodes.begin(); el != _mEpisodes.end();) {
-        if (el->second->showId == showId && el->second->season == seasonNumber) {
-            el = _mEpisodes.erase(el);
-        } else {
-            ++el;
-        }
-    }
-}
-
-void AppModel::removeLocalShow(const std::string& showId) {
-    _mShows.erase(showId);
-    for (auto el = _mEpisodes.begin(); el != _mEpisodes.end();) {
-        if (el->second->showId == showId) {
-            el = _mEpisodes.erase(el);
-        } else {
-            ++el;
-        }
-    }
-}
-
-/**
- * Scans the local filesystem for titles.
-*/
-void AppModel::scanLocalTitles()
-{
-    reloadConfirmedPlays();
-    _mTitles.clear();
-
-    if (!fs::exists(_mWorkingDirPath)) return;
-
-    for (const auto& entry : fs::recursive_directory_iterator(_mWorkingDirPath)) {
-        if (entry.is_directory()) {
-            continue;
-        }
-
-        auto path = entry.path();
-        auto relPath = fs::relative(path, _mWorkingDirPath);
-        std::string diskName = relPath.begin()->string();
-
-        auto title = std::make_unique<RippedTitle>(
-            path,
-            fs::file_size(path),
-            diskName,
-            path.filename().string()
-        );
-
-        auto pathStr = path.string();
-        bool isConfirmed = std::find(_mConfirmedPlayPaths.begin(), _mConfirmedPlayPaths.end(), pathStr) != _mConfirmedPlayPaths.end();
-
-        if (!isConfirmed && diskName == "originals") {
-            // Check if it's an original of a confirmed play.
-            // relPath is e.g. "originals/output/Show/Ep.mkv"
-            // We want to check for "output/Show/Ep.mkv"
-            auto it = relPath.begin();
-            ++it; // Skip "originals"
-            fs::path counterpartRelPath;
-            for (; it != relPath.end(); ++it) {
-                counterpartRelPath /= *it;
-            }
-            auto counterpartPath = _mWorkingDirPath / counterpartRelPath;
-            if (std::find(_mConfirmedPlayPaths.begin(), _mConfirmedPlayPaths.end(), counterpartPath.string()) != _mConfirmedPlayPaths.end()) {
-                isConfirmed = true;
-            }
-        }
-
-        if (isConfirmed) {
-            title->setConfirmed(true);
-        }
-
-        _mTitles.emplace(title->id, std::move(title));
-    }
-}
-
-void AppModel::reloadConfirmedPlays()
-{
-    _mConfirmedPlayPaths.clear();
-    std::ifstream file(_mConfigDirPath / "plays.txt");
-    std::string line;
-    while (std::getline(file, line)) {
-        if (!line.empty()) {
-            _mConfirmedPlayPaths.push_back(line);
-        }
-    }
-}
-
-/**
- * Scans the local filesystem for properly numbered episodes.
- * This uses an interesting format that has no formal tie to _mShows,
- * this way it can be loaded at anytime and exist on its own.
- */
-void AppModel::scanLocalEpisodes()
-{
-    _mLocalEpisodes.clear();
-
-    for (const auto& entry : fs::directory_iterator(outputDirectory())) {
-        if (!entry.is_directory()) {
-            continue;
-        }
-
-        auto showName = entry.path().filename().string();
-        for (const auto& entry : fs::directory_iterator(entry.path())) {
-            auto seasonKey = entry.path().filename().string().substr(0, 6);
-            _mLocalEpisodes[std::format("{} {}", showName, seasonKey)] = entry.path();
-        }
-    }
 }
 
 Show::Show(std::string _id, int _number, std::string _title, std::string _originalTitle, std::filesystem::path _path)
@@ -538,47 +327,6 @@ void AppModel::popTask()
     _mQueuedAndPendingJobs --;
 }
 
-/**
- * Creates all jobs from the current UI state.
- * *DOES NOT* append them to _mTasks, that is the UI's job.
- */
-std::vector<std::string> AppModel::generateJobsFromState()
-{
-    std::vector<std::string> jobs;
-    for (const auto& pair : _mIdentifiedEpisodes) {
-        auto titleId = pair.first;
-        auto episodeId = pair.second;
-
-        if (!hasTitle(titleId) || !hasEpisode(episodeId)) continue;
-
-        auto title = titleById(titleId);
-        auto episode = episodeById(episodeId);
-
-        if (!hasShow(episode.showId)) continue;
-
-        auto show = showById(episode.showId);
-
-        // RK: I don't like this being located here. The show's directory should be something like Show::outDir()
-        auto outDir = outputDirectory() / show.originalTitle;
-
-        if (!fs::exists(outDir)) {
-            auto cmd = std::format("_mkDir {}", outDir.string());
-            jobs.push_back(cmd);
-        }
-
-        auto savePath = outDir / std::format("{}.mkv", episode.seasonKey());
-        auto cmd2 = std::format("mv \"{}\" \"{}\"", title.path().string(), savePath.string());
-        jobs.push_back(cmd2);
-    }
-
-    if (jobs.size() > 0) {
-        jobs.push_back("_scanLocalTitles");
-        jobs.push_back("_scanLocalEpisodes");
-    }
-
-    return jobs;
-}
-
 fs::path RippedTitle::path()
 {
     return _mPath;
@@ -599,82 +347,8 @@ bool AppModel::showHasLocalFile(std::string showName, std::string seasonKey)
     return _mLocalEpisodes.contains(std::format("{} {}", showName, seasonKey));
 }
 
-std::vector<std::string> AppModel::getCommandsToDeleteFileForTitle(const std::string& titleId)
-{
-    if (!hasTitle(titleId)) {
-        return { };
-    }
-
-    auto title = titleById(titleId);
-    if (title.isDeleted()) {
-        return { };
-    }
-
-    auto cmd = std::format(
-    "mv \"{}\" \"{}.d\"",
-        title.path().string(),
-        title.path().string()
-    );
-
-    return {
-        cmd,
-        // And update the UI
-        "_scanLocalTitles",
-        "_clearTrees",
-        "_initialLoad"
-    };
-}
-
-std::vector<std::string> AppModel::getCommandsToUnDeleteFileForTitle(const std::string& titleId)
-{
-    if (!hasTitle(titleId)) {
-        return { };
-    }
-
-    auto title = titleById(titleId);
-    if (!title.isDeleted()) {
-        return { };
-    }
-
-    auto cmd = std::format(
-        "mv \"{}\" \"{}\"",
-        title.path().string(),
-        title.path().string().substr(0, title.path().string().length() - 2)
-    );
-
-    return {
-        cmd,
-        // And update the UI
-        "_scanLocalTitles",
-        "_clearTrees",
-        "_initialLoad",
-        "_reflowGcButton"
-    };
-}
-
-std::vector<std::string> AppModel::getCommandsToUploadEntireShow(const std::string& showId)
-{
-    if (!hasShow(showId)) {
-        return { };
-    }
-
-    auto show = showById(showId);
-    const auto showDir = outputDirectory() / show.originalTitle;
-
-    auto cmd = std::format(
-        "rsync -a \"{}/\" \"root@10.4.6.2:/mnt/user/emby/tv/{}/\"",
-        showDir.string(),
-        show.originalTitle
-    );
-
-    return {
-        cmd
-    };
-}
-
 std::vector<std::string> AppModel::getCommandsToCollectGarbage()
 {
-    scanLocalTitles();
     std::vector<std::string> ret;
     for (auto& title : titles()) {
         if (title->isDeleted()) {
@@ -685,7 +359,6 @@ std::vector<std::string> AppModel::getCommandsToCollectGarbage()
     }
 
     if (!ret.empty()) {
-        ret.emplace_back("_scanLocalTitles");
         ret.emplace_back("_clearTrees");
         ret.emplace_back("_initialLoad");
     }

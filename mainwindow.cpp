@@ -442,14 +442,12 @@ MainWindow::MainWindow(QWidget *parent)
             player->setSource(QUrl());
 
             auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-            auto cmds = appModel->getCommandsToDeleteFileForTitle(titleId);
-            _queueTasks(cmds);
+            /// Intentionally removed.
         });
 
         connect(unDeleteAction, &QAction::triggered, [&]() {
             auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-            auto cmds = appModel->getCommandsToUnDeleteFileForTitle(titleId);
-            _queueTasks(cmds);
+            /// Intentionally removed
         });
 
         menu.exec(ui->disksTree->viewport()->mapToGlobal(pos));
@@ -489,9 +487,6 @@ MainWindow::MainWindow(QWidget *parent)
             auto deleteShow = deleteMenu->addAction(q("Remove Show"));
             connect(deleteShow, &QAction::triggered, [this, showId]() {
                 delete_tv_show(showId.c_str());
-                std::string appModelId = showId;
-                if (!appModelId.starts_with("show.")) appModelId = "show." + appModelId;
-                appModel->removeLocalShow(appModelId);
             });
         }
 
@@ -512,9 +507,6 @@ MainWindow::MainWindow(QWidget *parent)
 
             connect(deleteShow, &QAction::triggered, [this, showId]() {
                 delete_tv_show(showId.c_str());
-                std::string appModelId = showId;
-                if (!appModelId.starts_with("show.")) appModelId = "show." + appModelId;
-                appModel->removeLocalShow(appModelId);
             });
 
             connect(deleteSeason, &QAction::triggered, [this, episodeId]() {
@@ -524,7 +516,6 @@ MainWindow::MainWindow(QWidget *parent)
                 auto episode = appModel->episodeById(appModelId);
 
                 delete_tv_season(episode.showId.c_str(), episode.season);
-                appModel->removeLocalSeason(episode.showId, episode.season);
             });
 
             connect(confirmAction, &QAction::triggered, [this, episodeId]() {
@@ -676,65 +667,10 @@ MainWindow::MainWindow(QWidget *parent)
         _reflowGcButton();
     }, Qt::QueuedConnection);
 
-    connect(worker, &CommandWorker::scanLocalTitles, this, [&]() {
-        appModel->scanLocalTitles();
-        _reflowDisksTree();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::scanLocalEpisodes, this, [&]() {
-        appModel->scanLocalEpisodes();
-        _reflowShowsTree();
-    }, Qt::QueuedConnection);
-
     connect(worker, &CommandWorker::clearTrees, this, [&]() {
         ui->disksTree->model()->removeRows(0, ui->disksTree->model()->rowCount());
         ui->showsTree->model()->removeRows(0, ui->showsTree->model()->rowCount());
         ui->filmsTree->model()->removeRows(0, ui->filmsTree->model()->rowCount());
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::scanLocalTmdbData, this, [&]() {
-        appModel->scanLocalTmdbData("*");
-        _reflowShowsTree();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::removeLocalSeason, this, [&](std::string showId, int seasonNumber) {
-        appModel->removeLocalSeason(showId, seasonNumber);
-        _reflowShowsTree();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::removeLocalShow, this, [&](std::string showId) {
-        appModel->removeLocalShow(showId);
-        _reflowShowsTree();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::scanFilesystemForShow, this, [&](int showId) {
-        appModel->scanLocalTmdbData(std::format("tv/{}.json", showId));
-        _reflowShowsTree();
-        if (showId == 0) {
-            return;
-        }
-
-        auto id = std::format("show.{}", showId);
-        if (!appModel->hasShow(id)) {
-            qDebug() << "Show" << id << "not found, no seasons to pull";
-            return;
-        };
-        auto show = appModel->showById(id);
-
-        for (auto seasonNr : show.seasons) {
-            auto cmd = std::format(
-                "curl https://api.themoviedb.org/3/tv/{}/season/{}.json --header \"Authorization: bearer {}\" -o {}/{}-S{:02}.json",
-                showId,
-                seasonNr,
-                ui->tmdbApiKey->text().toStdString(), // It would be nice to save this when the user starts fetching so they can't mess it up.
-                appModel->tvDirectory().string(),
-                showId,
-                seasonNr
-            );
-
-            _queueTask(cmd);
-            _queueTask("_scanFsForShow 0"); // TODO: make scanFsForAll or something
-        }
     }, Qt::QueuedConnection);
 }
 

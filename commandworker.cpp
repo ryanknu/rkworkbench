@@ -57,8 +57,6 @@ void CommandWorker::processQueue()
             } else {
                 qDebug() << "Invalid arguments for" << cmd;
             }
-        } else if (cmd.starts_with("_removeLocalShow ")) {
-            emit removeLocalShow(cmd.substr(17));
         } else if (cmd.starts_with("_deleteTvShow ")) {
             delete_tv_show(cmd.substr(14).c_str());
         } else if (cmd.starts_with("_deleteTvSeason ")) {
@@ -78,11 +76,6 @@ void CommandWorker::processQueue()
             emit clearTrees();
         } else if (cmd == "_initialLoad") {
             initial_load();
-        } else if (cmd.starts_with("_scanLocalTmdbData ")) {
-            emit scanLocalTmdbData(cmd.substr(19));
-        } else if (cmd.starts_with("_scanFsForShow ")) {
-            int showId = std::stoi(cmd.substr(15));
-            emit scanFilesystemForShow(showId);
         } else if (cmd.starts_with("_mkDir ")) {
             fs::path path(cmd.substr(7));
             if (!fs::exists(path)) {
