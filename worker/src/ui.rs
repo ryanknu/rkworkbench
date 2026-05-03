@@ -59,7 +59,17 @@ enum Mode {
 /// Mapped media shouldn't appear in the media tree but rather a colored entry on the media tree.
 pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
     let confirmed = state.confirmed_plays.borrow();
-    state.file_backed_titles().iter().filter(|n| !n.is_mapped()).map(|file|
+    state.file_backed_titles().iter().filter(|n| !n.is_mapped()).map(|file| {
+        let color = if file.marked_for_deletion(&confirmed, &state.media_dir) {
+            if file.file_name.contains(".d") {
+                "red".to_owned()
+            } else {
+                "cyan".to_owned()
+            }
+        } else {
+            "Default".to_owned()
+        };
+
         UiEvent::AddTreeItem {
             tree: Tree::Files,
             item: TreeItem {
@@ -67,11 +77,11 @@ pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
                 parent_id: None,
                 parent_text: file.collection().to_owned(),
                 text: file.name().to_owned(),
-                color: if file.marked_for_deletion(&confirmed) { "red".to_owned() } else { "Default".to_owned() },
+                color,
             },
             after: None,
         }
-    ).collect()
+    }).collect()
 }
 
 fn format_gib_size(bytes: u64) -> String {
@@ -83,8 +93,14 @@ pub fn build_tv_shows_tree(state: &MediaState) -> Vec<UiEvent> {
     state.tv_show_episodes().iter().map(|episode| {
         let id = MappableMediaId::TvEpisode(episode.id.clone());
         let mut text = format!("{} - {}", episode.series_key(), episode.name());
-        let color = if let Some(size) = state.get_on_disk_file_size(&id) {
+        let on_disk_size = state.get_on_disk_file_size(&id);
+        if let Some(size) = on_disk_size {
             text = format!("{} {}", format_gib_size(size), text);
+        }
+
+        let color = if state.is_confirmed_play(&id) {
+            "cyan".to_owned()
+        } else if on_disk_size.is_some() {
             "green".to_owned()
         } else if state.is_mapped_to_file(&id) {
             "orange".to_owned()
@@ -110,8 +126,14 @@ pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
     state.film_videos().iter().map(|film| {
         let id = MappableMediaId::FilmVideo(film.id.clone());
         let mut text = film.name().to_owned();
-        let color = if let Some(size) = state.get_on_disk_file_size(&id) {
+        let on_disk_size = state.get_on_disk_file_size(&id);
+        if let Some(size) = on_disk_size {
             text = format!("{} {}", format_gib_size(size), text);
+        }
+
+        let color = if state.is_confirmed_play(&id) {
+            "cyan".to_owned()
+        } else if on_disk_size.is_some() {
             "green".to_owned()
         } else if state.is_mapped_to_file(&id) {
             "orange".to_owned()
@@ -137,7 +159,7 @@ pub fn get_garbage_size(state: &MediaState) -> UiEvent {
     let confirmed = state.confirmed_plays.borrow();
     UiEvent::ChangeGarbageSize {
         size: state.file_backed_titles().iter()
-            .filter(|t| t.marked_for_deletion(&confirmed))
+            .filter(|t| t.marked_for_deletion(&confirmed, &state.media_dir))
             .fold(0u64, |t, a| t + a.size())
     }
 }
@@ -150,7 +172,19 @@ pub fn get_tree_change_action_for_mappable(state: &MediaState, id: MappableMedia
 
     let mut events = Vec::new();
 
-    let color = if let Some(size) = state.get_on_disk_file_size(&id) {
+    let on_disk_size = state.get_on_disk_file_size(&id);
+    let color = if state.is_confirmed_play(&id) {
+        if let Some(size) = on_disk_size {
+            if let Some(base_text) = state.get_mappable_text(&id) {
+                events.push(UiEvent::ChangeTreeItem {
+                    tree,
+                    id: id.id().to_owned(),
+                    change: ChangeText(format!("{} {}", format_gib_size(size), base_text))
+                });
+            }
+        }
+        "cyan".to_owned()
+    } else if let Some(size) = on_disk_size {
         if let Some(base_text) = state.get_mappable_text(&id) {
             events.push(UiEvent::ChangeTreeItem {
                 tree,
@@ -202,8 +236,14 @@ pub fn get_tree_change_action_for_mapping_file(id: FileBackedTitleId, is_mapped:
 
 pub fn get_add_tree_item_for_film(state: &MediaState, id: String, parent_id: String, film_name: String, mut description: String,) -> UiEvent {
     let mappable_id = MappableMediaId::FilmVideo(FilmVideoId(id.clone()));
-    let color = if let Some(size) = state.get_on_disk_file_size(&mappable_id) {
+    let on_disk_size = state.get_on_disk_file_size(&mappable_id);
+    if let Some(size) = on_disk_size {
         description = format!("{} {}", format_gib_size(size), description);
+    }
+
+    let color = if state.is_confirmed_play(&mappable_id) {
+        "cyan".to_owned()
+    } else if on_disk_size.is_some() {
         "green".to_owned()
     } else if state.is_mapped_to_file(&mappable_id) {
         "orange".to_owned()
@@ -226,8 +266,14 @@ pub fn get_add_tree_item_for_film(state: &MediaState, id: String, parent_id: Str
 
 pub fn get_add_tree_item_for_tv_show(state: &MediaState, id: String, parent_id: String, show_name: String, mut description: String,) -> UiEvent {
     let mappable_id = MappableMediaId::TvEpisode(TvEpisodeId(id.clone()));
-    let color = if let Some(size) = state.get_on_disk_file_size(&mappable_id) {
+    let on_disk_size = state.get_on_disk_file_size(&mappable_id);
+    if let Some(size) = on_disk_size {
         description = format!("{} {}", format_gib_size(size), description);
+    }
+
+    let color = if state.is_confirmed_play(&mappable_id) {
+        "cyan".to_owned()
+    } else if on_disk_size.is_some() {
         "green".to_owned()
     } else if state.is_mapped_to_file(&mappable_id) {
         "orange".to_owned()

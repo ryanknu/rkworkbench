@@ -306,39 +306,51 @@ void AppModel::removeLocalShow(const std::string& showId) {
 */
 void AppModel::scanLocalTitles()
 {
-    return;
     reloadConfirmedPlays();
     _mTitles.clear();
 
-    for (const auto& entry : fs::directory_iterator(_mWorkingDirPath)) {
-        if (!entry.is_directory()) {
+    if (!fs::exists(_mWorkingDirPath)) return;
+
+    for (const auto& entry : fs::recursive_directory_iterator(_mWorkingDirPath)) {
+        if (entry.is_directory()) {
             continue;
         }
 
-        // Skip the output directory.
-        if (entry.path().filename().string() == "output") {
-            continue;
-        }
+        auto path = entry.path();
+        auto relPath = fs::relative(path, _mWorkingDirPath);
+        std::string diskName = relPath.begin()->string();
 
-        auto diskName = entry.path().filename().string();
+        auto title = std::make_unique<RippedTitle>(
+            path,
+            fs::file_size(path),
+            diskName,
+            path.filename().string()
+        );
 
-        for (const auto& entry : fs::directory_iterator(entry.path())) {
-            std::uintmax_t size = fs::file_size(entry.path());
+        auto pathStr = path.string();
+        bool isConfirmed = std::find(_mConfirmedPlayPaths.begin(), _mConfirmedPlayPaths.end(), pathStr) != _mConfirmedPlayPaths.end();
 
-            auto title = std::make_unique<RippedTitle>(
-                entry.path(),
-                size,
-                diskName,
-                entry.path().filename().string()
-            );
-
-            auto pathStr = entry.path().string();
-            if (std::find(_mConfirmedPlayPaths.begin(), _mConfirmedPlayPaths.end(), pathStr) != _mConfirmedPlayPaths.end()) {
-                title->setConfirmed(true);
+        if (!isConfirmed && diskName == "originals") {
+            // Check if it's an original of a confirmed play.
+            // relPath is e.g. "originals/output/Show/Ep.mkv"
+            // We want to check for "output/Show/Ep.mkv"
+            auto it = relPath.begin();
+            ++it; // Skip "originals"
+            fs::path counterpartRelPath;
+            for (; it != relPath.end(); ++it) {
+                counterpartRelPath /= *it;
             }
-
-            _mTitles.emplace(title->id, std::move(title));
+            auto counterpartPath = _mWorkingDirPath / counterpartRelPath;
+            if (std::find(_mConfirmedPlayPaths.begin(), _mConfirmedPlayPaths.end(), counterpartPath.string()) != _mConfirmedPlayPaths.end()) {
+                isConfirmed = true;
+            }
         }
+
+        if (isConfirmed) {
+            title->setConfirmed(true);
+        }
+
+        _mTitles.emplace(title->id, std::move(title));
     }
 }
 

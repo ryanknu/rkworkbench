@@ -13,10 +13,10 @@ use std::str::FromStr;
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Mutex, OnceLock};
 use std::thread;
-use crate::media::{MappableMediaId, FileBackedTitleId, MediaState, TvEpisodeId, FilmVideoId, TvShowId};
+use crate::media::{MappableMediaId, FileBackedTitleId, MediaState, TvEpisodeId, FilmVideoId};
 use crate::requests::IncomingRequest;
 use crate::requests::IncomingRequest::*;
-use crate::ui::{build_files_tree, build_tv_shows_tree, get_garbage_size, UiEvent};
+use crate::ui::UiEvent;
 
 static SENDER: OnceLock<Mutex<Sender<IncomingRequest>>> = OnceLock::new();
 static FFMPEG_SENDER: OnceLock<Mutex<Sender<IncomingRequest>>> = OnceLock::new();
@@ -272,6 +272,30 @@ pub extern "C" fn get_filename_for_title_id(title_id: *const c_char) -> *mut c_c
     let rust_string = path.as_os_str().to_str().unwrap().to_owned();
     let c_string = CString::new(rust_string).expect("CString::new failed");
     c_string.into_raw()
+}
+
+/// Returns the filename for a given tv episode id.
+#[unsafe(no_mangle)]
+pub extern "C" fn get_filename_for_tv_episode_id(id: *const c_char) -> *mut c_char {
+    let id = TvEpisodeId(cstr(id));
+    let media = MEDIA.get().unwrap().lock().unwrap();
+
+    let episode_info = {
+        let episodes = media.tv_show_episodes.borrow();
+        let tv_shows = media.tv_shows.borrow();
+        episodes.iter().find(|e| e.id == id).and_then(|e| {
+            tv_shows.iter().find(|s| s.id == e.show_id).map(|s| (s.show_key.clone(), e.series_key.clone()))
+        })
+    };
+
+    match episode_info {
+        Some((_show_key, series_key)) => {
+            let s = format!("{}.mkv", series_key);
+            let c_str = CString::new(s).unwrap();
+            c_str.into_raw()
+        }
+        None => std::ptr::null_mut(),
+    }
 }
 
 /// Frees the C string allocated in rust land.

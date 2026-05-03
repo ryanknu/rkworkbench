@@ -6,6 +6,7 @@
 #include <QTreeView>
 #include <QAction>
 #include <QMediaPlayer>
+#include <QTimer>
 #include "model.h"
 #include "commandworker.h"
 
@@ -46,11 +47,17 @@ private:
 
 	// UI State
 	int _mRequestedPlayerPosition = 0;
+	int ffmpegQueueCount = 0;
+	int ffmpegActiveCount = 0;
+	QTimer *spinnerTimer = nullptr;
+	int spinnerIndex = 0;
+	std::string currentEncodingFile;
 
 	void _reflowDisksTree() const;
 	void _reflowShowsTree() const;
 	void _reflowGcButton() const;
 	void _reflowTaskList();
+	void _updateFfmpegStatus();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _queueTask(std::string cmd);
 	void _queueTasks(std::vector<std::string> cmds);
@@ -64,6 +71,7 @@ extern "C" {
 
 	// Fast requests to the backend
 	const char* get_filename_for_title_id(const char* id);
+	const char* get_filename_for_tv_episode_id(const char* id);
 	void free_string(const char* str);
 
 	// Commands that the worker thread can work.

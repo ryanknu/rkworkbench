@@ -260,9 +260,6 @@ impl MediaState {
             }
 
             let path = entry.path();
-            if self.is_in_originals_dir(path) {
-                continue;
-            }
 
             // get the last two path parts as a tuple
             let mut components = path.components();
@@ -363,6 +360,17 @@ impl MediaState {
 
     pub fn is_on_disk(&self, id: &MappableMediaId) -> bool {
         self.get_on_disk_file_size(id).is_some()
+    }
+
+    pub fn is_confirmed_play(&self, id: &MappableMediaId) -> bool {
+        if let Some(tid) = self.get_title_id_for_mappable(id) {
+            let titles = self.file_backed_titles.borrow();
+            if let Some(title) = titles.iter().find(|t| t.id == tid) {
+                let confirmed = self.confirmed_plays.borrow();
+                return confirmed.contains(&title.path);
+            }
+        }
+        false
     }
 
     pub fn get_on_disk_file_size(&self, id: &MappableMediaId) -> Option<u64> {
@@ -555,8 +563,21 @@ impl FileBackedTitle {
         self.file_size
     }
 
-    pub fn marked_for_deletion(&self, confirmed_plays: &HashSet<PathBuf>) -> bool {
-        self.file_name.contains(".d") || confirmed_plays.contains(&self.path)
+    pub fn marked_for_deletion(&self, confirmed_plays: &HashSet<PathBuf>, media_dir: &Path) -> bool {
+        if self.file_name.contains(".d") || confirmed_plays.contains(&self.path) {
+            return true;
+        }
+
+        let originals_dir = media_dir.join("originals");
+        if self.path.starts_with(&originals_dir) {
+            if let Ok(rel) = self.path.strip_prefix(&originals_dir) {
+                let counterpart = media_dir.join(rel);
+                if confirmed_plays.contains(&counterpart) {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     pub fn is_mapped(&self) -> bool {

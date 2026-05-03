@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 use std::{fs, thread};
-use std::str::FromStr;
 use std::time::{Duration, Instant};
 use serde::Deserialize;
 use walkdir::WalkDir;
@@ -173,7 +172,7 @@ impl TmdbCache {
             }
         }
 
-        let mut base_url = format!("{}/tv/{tmdb_id}", self.tmdb_base_url);
+        let base_url = format!("{}/tv/{tmdb_id}", self.tmdb_base_url);
         let body = ureq::get(&base_url)
             .header("Authorization", format!("Bearer {api_key}"))
             .call()?

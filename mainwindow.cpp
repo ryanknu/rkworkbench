@@ -360,9 +360,18 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    ui->ffmpegStatusWidget->hide();
     setMouseTrackingRecursive(this, true);
 
     ui->filmsTree->hide();
+
+    // Spinner timer
+    spinnerTimer = new QTimer(this);
+    connect(spinnerTimer, &QTimer::timeout, this, [&]() {
+        const QString frames[] = {"|", "/", "-", "\\"};
+        spinnerIndex = (spinnerIndex + 1) % 4;
+        ui->spinnerLabel->setText(frames[spinnerIndex]);
+    });
 
     // Spin up background thread
     worker = new CommandWorker();
@@ -476,8 +485,8 @@ MainWindow::MainWindow(QWidget *parent)
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
 
         if (episodeId.empty()) {
-            auto deleteMenu = menu.addMenu(q("Delete Stuff"));
-            auto deleteShow = deleteMenu->addAction(q("Delete Show"));
+            auto deleteMenu = menu.addMenu(q("Remove Metadata"));
+            auto deleteShow = deleteMenu->addAction(q("Remove Show"));
             connect(deleteShow, &QAction::triggered, [this, showId]() {
                 delete_tv_show(showId.c_str());
                 std::string appModelId = showId;
@@ -497,9 +506,9 @@ MainWindow::MainWindow(QWidget *parent)
             auto unidentifyAction = menu.addAction(q("Unidentify"));
             auto reencodeAction = menu.addAction(q("Re-encode (ffmpeg)"));
 
-            auto deleteMenu = menu.addMenu(q("Delete Stuff"));
-            auto deleteShow = deleteMenu->addAction(q("Delete Show"));
-            auto deleteSeason = deleteMenu->addAction(q(std::format("Delete {}", seasonText.toStdString())));
+            auto deleteMenu = menu.addMenu(q("Remove Metadata"));
+            auto deleteShow = deleteMenu->addAction(q("Remove Show"));
+            auto deleteSeason = deleteMenu->addAction(q(std::format("Remove {}", seasonText.toStdString())));
 
             connect(deleteShow, &QAction::triggered, [this, showId]() {
                 delete_tv_show(showId.c_str());
@@ -530,8 +539,10 @@ MainWindow::MainWindow(QWidget *parent)
                 unidentify_tv_episode(episodeId.c_str());
             });
 
-            connect(reencodeAction, &QAction::triggered, [episodeId]() {
+            connect(reencodeAction, &QAction::triggered, [this, episodeId]() {
                 reencode_tv_episode(episodeId.c_str());
+                this->ffmpegQueueCount++;
+                this->_updateFfmpegStatus();
             });
         }
 
@@ -771,6 +782,23 @@ void MainWindow::mouseMoveEvent(QMouseEvent *event)
     QWidget::mouseMoveEvent(event);
 }
 
+void MainWindow::_updateFfmpegStatus() {
+    if (ffmpegActiveCount > 0 || ffmpegQueueCount > 0) {
+        ui->ffmpegStatusWidget->show();
+        if (ffmpegActiveCount > 0) {
+            spinnerTimer->start(250);
+            ui->statusLabel->setText(q(std::format("Encoding: {} ({} in queue)", currentEncodingFile, ffmpegQueueCount)));
+        } else {
+            spinnerTimer->stop();
+            ui->spinnerLabel->setText("-");
+            ui->statusLabel->setText(q(std::format("Waiting: {} jobs in queue", ffmpegQueueCount)));
+        }
+    } else {
+        ui->ffmpegStatusWidget->hide();
+        spinnerTimer->stop();
+    }
+}
+
 void MainWindow::processMessage(std::string message) {
     qDebug() << "[ cpp] incoming message:" << message;
     if (message == "\"WorkerReady\"") {
@@ -780,7 +808,43 @@ void MainWindow::processMessage(std::string message) {
     }
 
     // The message is (probably) JSON
-    json m = json::parse(message);
+    json m;
+    try {
+        m = json::parse(message);
+    } catch (...) {
+        return;
+    }
+
+    try {
+        if (m.contains("CommandStarted")) {
+            auto req = m["CommandStarted"];
+            if (req.contains("ReencodeRequest")) {
+                std::string id = req["ReencodeRequest"][0].get<std::string>();
+                auto fileName = get_filename_for_tv_episode_id(id.c_str());
+                if (fileName) {
+                    currentEncodingFile = fileName;
+                    free_string(fileName);
+                }
+                
+                ffmpegQueueCount = std::max(0, ffmpegQueueCount - 1);
+                ffmpegActiveCount++;
+                _updateFfmpegStatus();
+            }
+        }
+    } catch (...) {}
+
+    try {
+        if (m.contains("CommandCompleted")) {
+            auto req = m["CommandCompleted"];
+            if (req.contains("ReencodeRequest")) {
+                ffmpegActiveCount = std::max(0, ffmpegActiveCount - 1);
+                if (ffmpegActiveCount == 0) {
+                    currentEncodingFile = "";
+                }
+                _updateFfmpegStatus();
+            }
+        }
+    } catch (...) {}
 
     try {
         auto tree = m["AddTreeItem"]["tree"].get<std::string>();

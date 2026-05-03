@@ -1,6 +1,6 @@
 use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, MediaId, TvShow, TvShowEpisode, TvShowId, TvEpisodeId};
 use crate::tmdb::{TmdbItem, TmdbTvShow, TmdbTvShowSeason};
-use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, Tree, TreeItem, UiEvent};
+use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, Tree, TreeItem, TreeItemChange::ChangeColor, UiEvent};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use std::fs;
@@ -135,7 +135,7 @@ pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
 pub fn map_media(media: &MediaState, from: FileBackedTitleId, to: MappableMediaId) -> Vec<UiEvent> {
     let media = unlock_media!(media);
 
-    let Some(mapping) = media.map_media(&from, &to) else {
+    let Some(_mapping) = media.map_media(&from, &to) else {
         println!("Mapping failed for file {:?} to {:?}", from, to);
         return vec![];
     };
@@ -376,7 +376,23 @@ pub fn confirm_play(media: &MediaState, id: MappableMediaId) -> Vec<UiEvent> {
 
     if let Some(path) = path_to_confirm {
         media.add_confirmed_play(path);
-        vec![get_garbage_size(&media)]
+        
+        let mut events = get_tree_change_action_for_mappable(&media, id);
+        events.push(get_garbage_size(&media));
+
+        // Update Files tree for any titles that are now marked for deletion (confirmed or its original)
+        let titles = media.file_backed_titles.borrow();
+        let confirmed = media.confirmed_plays.borrow();
+        for title in titles.iter() {
+            if !title.is_mapped() && title.marked_for_deletion(&confirmed, &media.media_dir) {
+                events.push(UiEvent::ChangeTreeItem {
+                    tree: Tree::Files,
+                    id: title.id.0.clone(),
+                    change: ChangeColor(if title.file_name.contains(".d") { "red".to_owned() } else { "cyan".to_owned() })
+                });
+            }
+        }
+        events
     } else {
         println!("Failed to find file to confirm play for {:?}", id.id());
         vec![]
@@ -520,7 +536,7 @@ pub fn unidentify_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent
                     parent_id: None,
                     parent_text: title.collection.clone(),
                     text: title.file_name.clone(),
-                    color: if title.marked_for_deletion(&confirmed) { "red".to_owned() } else { "Default".to_owned() },
+                    color: if title.marked_for_deletion(&confirmed, &media.media_dir) { "red".to_owned() } else { "Default".to_owned() },
                 },
                 after: None,
             });
