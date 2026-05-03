@@ -316,19 +316,22 @@ pub fn rename_identified(media: &MediaState) -> Vec<UiEvent> {
 }
 
 pub fn rsync_show(media: &MediaState, id: String) -> Vec<UiEvent> {
-    let media = unlock_media!(media);
+    let (folder_name, source, destination, config_dir) = {
+        let media = unlock_media!(media);
 
-    let (folder_name, sub_dir) = if let Some(show) = media.get_show_by_id(&TvShowId(id.clone())) {
-        (show.show_key.clone(), "tv")
-    } else if let Some(film) = media.get_film_by_id(&FilmId(id.clone())) {
-        (film.film_key().to_owned(), "movies")
-    } else {
-        println!("Media not found for rsync: {:?}", id);
-        return vec![];
+        let (folder_name, sub_dir) = if let Some(show) = media.get_show_by_id(&TvShowId(id.clone())) {
+            (show.show_key.clone(), "tv")
+        } else if let Some(film) = media.get_film_by_id(&FilmId(id.clone())) {
+            (film.film_key().to_owned(), "movies")
+        } else {
+            println!("Media not found for rsync: {:?}", id);
+            return vec![];
+        };
+
+        let source = media.media_dir.join("output").join(&folder_name);
+        let destination = format!("root@10.4.6.2:/mnt/user/emby/{}/{}/", sub_dir, folder_name);
+        (folder_name, source, destination, media.config_dir.clone())
     };
-
-    let source = media.media_dir.join("output").join(&folder_name);
-    let destination = format!("root@10.4.6.2:/mnt/user/emby/{}/{}/", sub_dir, folder_name);
 
     println!("[rust] rsyncing {:?} to {:?}", source, destination);
 
@@ -343,7 +346,7 @@ pub fn rsync_show(media: &MediaState, id: String) -> Vec<UiEvent> {
         Ok(s) if s.success() => {
             println!("[rust] rsync successful for {}", folder_name);
             // Log rsynced files
-            let log_file = media.config_dir.join("rsynced_files.txt");
+            let log_file = config_dir.join("rsynced_files.txt");
             if let Ok(mut file) = std::fs::OpenOptions::new()
                 .create(true)
                 .append(true)
@@ -633,52 +636,55 @@ pub fn unidentify_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent
 }
 
 pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent> {
-    let media = unlock_media!(media);
+    let (current_path, originals_path) = {
+        let media = unlock_media!(media);
 
-    // 1. Find the episode and its current path
-    let episode_info = {
-        let episodes = media.tv_show_episodes.borrow();
-        let tv_shows = media.tv_shows.borrow();
-        episodes.iter().find(|e| e.id == id).and_then(|e| {
-            tv_shows.iter().find(|s| s.id == e.show_id).map(|s| (s.show_key.clone(), e.series_key.clone()))
-        })
-    };
+        // 1. Find the episode and its current path
+        let episode_info = {
+            let episodes = media.tv_show_episodes.borrow();
+            let tv_shows = media.tv_shows.borrow();
+            episodes.iter().find(|e| e.id == id).and_then(|e| {
+                tv_shows.iter().find(|s| s.id == e.show_id).map(|s| (s.show_key.clone(), e.series_key.clone()))
+            })
+        };
 
-    let Some((show_key, series_key)) = episode_info else {
-        println!("Episode info not found for reencode: {:?}", id);
-        return vec![];
-    };
+        let Some((show_key, series_key)) = episode_info else {
+            println!("Episode info not found for reencode: {:?}", id);
+            return vec![];
+        };
 
-    let current_rel_path = vec![show_key, format!("{}.mkv", series_key)];
-    let mut current_path = media.media_dir.join("output");
-    for part in &current_rel_path {
-        current_path = current_path.join(part);
-    }
+        let current_rel_path = vec![show_key, format!("{}.mkv", series_key)];
+        let mut current_path = media.media_dir.join("output");
+        for part in &current_rel_path {
+            current_path = current_path.join(part);
+        }
 
-    if !current_path.exists() {
-        println!("File not found for reencode: {:?}", current_path);
-        return vec![];
-    }
-
-    // 2. Determine the "originals" path
-    let mut originals_path = media.media_dir.join("originals");
-    for part in &current_rel_path {
-        originals_path = originals_path.join(part);
-    }
-
-    // 3. Move file to originals
-    if let Some(parent) = originals_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            println!("Error creating originals directory {:?}: {:?}", parent, e);
+        if !current_path.exists() {
+            println!("File not found for reencode: {:?}", current_path);
             return vec![];
         }
-    }
 
-    println!("Moving {:?} to {:?}", current_path, originals_path);
-    if let Err(e) = fs::rename(&current_path, &originals_path) {
-        println!("Error moving file to originals: {:?}", e);
-        return vec![];
-    }
+        // 2. Determine the "originals" path
+        let mut originals_path = media.media_dir.join("originals");
+        for part in &current_rel_path {
+            originals_path = originals_path.join(part);
+        }
+
+        // 3. Move file to originals
+        if let Some(parent) = originals_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                println!("Error creating originals directory {:?}: {:?}", parent, e);
+                return vec![];
+            }
+        }
+
+        println!("Moving {:?} to {:?}", current_path, originals_path);
+        if let Err(e) = fs::rename(&current_path, &originals_path) {
+            println!("Error moving file to originals: {:?}", e);
+            return vec![];
+        }
+        (current_path, originals_path)
+    };
 
     // 4. Run ffmpeg
     // Command: ffmpeg -i {originals_path} -map 0 -c copy -c:v libx265 -crf 18 {current_path}
@@ -702,6 +708,7 @@ pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent> 
             println!("ffmpeg successful for {:?}", current_path);
             // 5. Update state (file size)
             if let Ok(metadata) = fs::metadata(&current_path) {
+                let media = unlock_media!(media);
                 let mut titles = media.file_backed_titles.borrow_mut();
                 if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
                     title.file_size = metadata.len();
@@ -716,6 +723,7 @@ pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent> 
         }
     }
 
+    let media = unlock_media!(media);
     let mut events = vec![get_garbage_size(&media)];
     events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::TvEpisode(id)));
     events
@@ -794,48 +802,51 @@ pub fn unidentify_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent
 }
 
 pub fn reencode_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent> {
-    let media = unlock_media!(media);
+    let (current_path, originals_path) = {
+        let media = unlock_media!(media);
 
-    // 1. Find the video and its current path
-    let video_info = {
-        let videos = media.film_videos.borrow();
-        videos.iter().find(|v| v.id == id).map(|v| v.get_ideal_storage_path())
-    };
+        // 1. Find the video and its current path
+        let video_info = {
+            let videos = media.film_videos.borrow();
+            videos.iter().find(|v| v.id == id).map(|v| v.get_ideal_storage_path())
+        };
 
-    let Some(current_rel_path) = video_info else {
-        println!("Video info not found for reencode: {:?}", id);
-        return vec![];
-    };
+        let Some(current_rel_path) = video_info else {
+            println!("Video info not found for reencode: {:?}", id);
+            return vec![];
+        };
 
-    let mut current_path = media.media_dir.join("output");
-    for part in &current_rel_path {
-        current_path = current_path.join(part);
-    }
+        let mut current_path = media.media_dir.join("output");
+        for part in &current_rel_path {
+            current_path = current_path.join(part);
+        }
 
-    if !current_path.exists() {
-        println!("File not found for reencode: {:?}", current_path);
-        return vec![];
-    }
-
-    // 2. Determine the "originals" path
-    let mut originals_path = media.media_dir.join("originals");
-    for part in &current_rel_path {
-        originals_path = originals_path.join(part);
-    }
-
-    // 3. Move file to originals
-    if let Some(parent) = originals_path.parent() {
-        if let Err(e) = fs::create_dir_all(parent) {
-            println!("Error creating originals directory {:?}: {:?}", parent, e);
+        if !current_path.exists() {
+            println!("File not found for reencode: {:?}", current_path);
             return vec![];
         }
-    }
 
-    println!("Moving {:?} to {:?}", current_path, originals_path);
-    if let Err(e) = fs::rename(&current_path, &originals_path) {
-        println!("Error moving file to originals: {:?}", e);
-        return vec![];
-    }
+        // 2. Determine the "originals" path
+        let mut originals_path = media.media_dir.join("originals");
+        for part in &current_rel_path {
+            originals_path = originals_path.join(part);
+        }
+
+        // 3. Move file to originals
+        if let Some(parent) = originals_path.parent() {
+            if let Err(e) = fs::create_dir_all(parent) {
+                println!("Error creating originals directory {:?}: {:?}", parent, e);
+                return vec![];
+            }
+        }
+
+        println!("Moving {:?} to {:?}", current_path, originals_path);
+        if let Err(e) = fs::rename(&current_path, &originals_path) {
+            println!("Error moving file to originals: {:?}", e);
+            return vec![];
+        }
+        (current_path, originals_path)
+    };
 
     // 4. Run ffmpeg
     println!("Running ffmpeg on {:?}", originals_path);
@@ -857,6 +868,7 @@ pub fn reencode_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent> 
         Ok(s) if s.success() => {
             println!("ffmpeg successful for {:?}", current_path);
             if let Ok(metadata) = fs::metadata(&current_path) {
+                let media = unlock_media!(media);
                 let mut titles = media.file_backed_titles.borrow_mut();
                 if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
                     title.file_size = metadata.len();
@@ -871,6 +883,7 @@ pub fn reencode_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent> 
         }
     }
 
+    let media = unlock_media!(media);
     let mut events = vec![get_garbage_size(&media)];
     events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::FilmVideo(id)));
     events
