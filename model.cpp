@@ -347,24 +347,6 @@ bool AppModel::showHasLocalFile(std::string showName, std::string seasonKey)
     return _mLocalEpisodes.contains(std::format("{} {}", showName, seasonKey));
 }
 
-std::vector<std::string> AppModel::getCommandsToCollectGarbage()
-{
-    std::vector<std::string> ret;
-    for (auto& title : titles()) {
-        if (title->isDeleted()) {
-            ret.push_back(
-                std::format("_rm {}", title->path().string())
-            );
-        }
-    }
-
-    if (!ret.empty()) {
-        ret.emplace_back("_clearTrees");
-        ret.emplace_back("_initialLoad");
-    }
-
-    return ret;
-}
 
 int AppModel::requestedPosition() {
     return _mRequestedPosition;

@@ -59,7 +59,7 @@ enum Mode {
 /// Mapped media shouldn't appear in the media tree but rather a colored entry on the media tree.
 pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
     let confirmed = state.confirmed_plays.borrow();
-    state.file_backed_titles().iter().filter(|n| !n.is_mapped()).map(|file| {
+    state.file_backed_titles().iter().filter(|n| !n.is_mapped() && !state.is_in_originals_dir(n.path())).map(|file| {
         let color = if file.marked_for_deletion(&confirmed, &state.media_dir) {
             if file.file_name.contains(".d") {
                 "red".to_owned()

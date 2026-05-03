@@ -99,6 +99,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 UndeleteTitle(id) => requests::undelete_title(&MEDIA, id),
                 Unidentify(id) => requests::unidentify_tv_episode(&MEDIA, id),
                 UnidentifyFilm(id) => requests::unidentify_film_video(&MEDIA, id),
+                CollectGarbage => requests::collect_garbage(&MEDIA),
                 _ => vec![],
             };
 
@@ -397,4 +398,11 @@ pub extern "C" fn undelete_title(title_id: *const c_char) {
     let title_id = FileBackedTitleId(cstr(title_id));
 
     SENDER.get().map(|s| s.lock().unwrap().send(UndeleteTitle(title_id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn collect_garbage() {
+    println!("[rust] collect_garbage called");
+
+    SENDER.get().map(|s| s.lock().unwrap().send(CollectGarbage));
 }

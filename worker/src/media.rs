@@ -126,6 +126,62 @@ impl MediaState {
             }
         }
     }
+
+    pub fn save_confirmed_plays(&self) {
+        let plays_file = self.config_dir.join("plays.txt");
+        if let Ok(mut file) = std::fs::File::create(plays_file) {
+            let confirmed = self.confirmed_plays.borrow();
+            for path in confirmed.iter() {
+                let _ = writeln!(file, "{}", path.to_string_lossy());
+            }
+        }
+    }
+
+    pub fn get_mappables_for_title(&self, title_id: &FileBackedTitleId) -> Vec<MappableMediaId> {
+        let titles = self.file_backed_titles.borrow();
+        let Some(title) = titles.iter().find(|t| t.id == *title_id) else {
+            return vec![];
+        };
+
+        if let Some(mapped) = &title.mapped_media {
+            match mapped {
+                MediaId::TvEpisode(id) => return vec![MappableMediaId::TvEpisode(id.clone())],
+                MediaId::FilmVideo(id) => return vec![MappableMediaId::FilmVideo(id.clone())],
+                MediaId::SemanticNameKey(key) => {
+                    let mut result = Vec::new();
+                    for episode in self.tv_show_episodes.borrow().iter() {
+                        if let Some(show_key) = self.tv_show_key(&episode.show_id) {
+                            let expected_key = format!("{} - {}", show_key, episode.series_key);
+                            if *key == expected_key {
+                                result.push(MappableMediaId::TvEpisode(episode.id.clone()));
+                                continue;
+                            }
+                            let expected_key_with_name = format!("{} - {} - {}", show_key, episode.series_key, episode.name);
+                            if *key == expected_key_with_name {
+                                result.push(MappableMediaId::TvEpisode(episode.id.clone()));
+                            }
+                        }
+                    }
+                    for video in self.film_videos.borrow().iter() {
+                        if video.ty == "FeaturePresentation" {
+                            let expected_key = format!("{} - {}", video.film_key, video.film_key);
+                            if *key == expected_key {
+                                result.push(MappableMediaId::FilmVideo(video.id.clone()));
+                                continue;
+                            }
+                        }
+                        let expected_key_with_name = format!("{} - {}", video.film_key, video.name);
+                        if *key == expected_key_with_name {
+                            result.push(MappableMediaId::FilmVideo(video.id.clone()));
+                        }
+                    }
+                    return result;
+                }
+                _ => {}
+            }
+        }
+        vec![]
+    }
 }
 
 #[derive(Clone)]
@@ -239,7 +295,7 @@ impl MediaState {
         path.starts_with(out_dir)
     }
 
-    fn is_in_originals_dir(&self, path: &Path) -> bool {
+    pub fn is_in_originals_dir(&self, path: &Path) -> bool {
         let originals_dir = self.media_dir.join("originals");
         path.starts_with(originals_dir)
     }
@@ -271,11 +327,7 @@ impl MediaState {
 
             let (file_name, folder_name) = (file_name.as_os_str().to_str().unwrap_or_default(), folder_name.as_os_str().to_str().unwrap_or_default());
 
-            if self.is_in_originals_dir(entry.path()) {
-                continue;
-            }
-
-            // If it's in the output directory, we know that it's named to follow semantic conventions.
+            // originals are counted towards garbage but shouldn't be mapped.
             let mapped_media = if self.is_in_output_dir(entry.path()) {
                 let file_name_clean = file_name.replace(".mkv", "");
                 let out_dir = self.media_dir.join("output");
@@ -610,9 +662,10 @@ impl FileBackedTitle {
         }
 
         let originals_dir = media_dir.join("originals");
+        let output_dir = media_dir.join("output");
         if self.path.starts_with(&originals_dir) {
             if let Ok(rel) = self.path.strip_prefix(&originals_dir) {
-                let counterpart = media_dir.join(rel);
+                let counterpart = output_dir.join(rel);
                 if confirmed_plays.contains(&counterpart) {
                     return true;
                 }

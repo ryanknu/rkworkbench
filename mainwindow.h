@@ -95,4 +95,5 @@ extern "C" {
 	void reencode_film_video(const char* id);
 	void delete_title(const char* id);
 	void undelete_title(const char* id);
+	void collect_garbage();
 }

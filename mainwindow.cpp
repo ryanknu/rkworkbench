@@ -115,7 +115,11 @@ void MainWindow::_changeTreeItemColor(std::string treeName, std::string id, std:
 
     if (!items.empty() && items.at(0).isValid()) {
         auto item = model->itemFromIndex(items.at(0));
-        item->setForeground(QBrush(QColor(color.c_str())));
+        if (color == "Default") {
+            item->setData(QVariant(), Qt::ForegroundRole);
+        } else {
+            item->setForeground(QBrush(QColor(color.c_str())));
+        }
     }
 }
 
@@ -671,7 +675,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->gcBtn, &QPushButton::clicked, [&]() {
-        _queueTasks(appModel->getCommandsToCollectGarbage());
+        collect_garbage();
     });
 
     connect(worker, &CommandWorker::commandCompleted, this, [&]() {

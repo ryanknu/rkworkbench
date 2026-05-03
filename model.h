@@ -54,7 +54,6 @@ public:
     std::vector<std::string> getCommandsToDeleteFileForTitle(const std::string& titleId);
     std::vector<std::string> getCommandsToUnDeleteFileForTitle(const std::string& titleId);
     std::vector<std::string> getCommandsToUploadEntireShow(const std::string& showId);
-    std::vector<std::string> getCommandsToCollectGarbage();
     int requestedPosition();
     void setRequestedPosition(int position);
     bool canGarbageCollect();

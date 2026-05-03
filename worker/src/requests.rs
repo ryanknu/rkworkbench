@@ -29,6 +29,7 @@ pub enum IncomingRequest {
     UnidentifyFilm(FilmVideoId),
     ReencodeRequest(TvEpisodeId),
     ReencodeFilmRequest(FilmVideoId),
+    CollectGarbage,
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -959,4 +960,98 @@ pub fn delete_film_video(media: &MediaState, id: String) -> Vec<UiEvent> {
     media.delete_film_video(&video_id);
     events.push(get_garbage_size(&media));
     events
+}
+
+pub fn collect_garbage(media: &MediaState) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut events = Vec::new();
+
+    let to_delete = {
+        let confirmed = media.confirmed_plays.borrow();
+        let titles = media.file_backed_titles.borrow();
+        titles.iter()
+            .filter(|t| t.marked_for_deletion(&confirmed, &media.media_dir))
+            .map(|t| (t.id.clone(), t.path.clone()))
+            .collect::<Vec<_>>()
+    };
+
+    let mut confirmed_plays_changed = false;
+
+    for (id, path) in to_delete {
+        let mappables = media.get_mappables_for_title(&id);
+
+        println!("[rust] Garbage collecting: {:?}", path);
+        if path.exists() {
+            if let Err(e) = fs::remove_file(&path) {
+                println!("Error removing file {:?}: {:?}", path, e);
+                continue;
+            }
+        }
+
+        // If it was a confirmed play, remove it from the set
+        if media.confirmed_plays.borrow_mut().remove(&path) {
+            confirmed_plays_changed = true;
+        }
+
+        // Remove from memory
+        media.file_backed_titles.borrow_mut().retain(|t| t.id != id);
+
+        // Remove from Files tree
+        events.push(UiEvent::RemoveTreeItemById {
+            tree: Tree::Files,
+            id: id.0,
+        });
+
+        // Update colors for mappables
+        for mappable in mappables {
+            let (tree, raw_id) = match mappable {
+                MappableMediaId::TvEpisode(id) => (Tree::TvShows, id.0),
+                MappableMediaId::FilmVideo(id) => (Tree::Films, id.0),
+            };
+            events.push(UiEvent::ChangeTreeItem {
+                tree,
+                id: raw_id,
+                change: ChangeColor("Default".to_owned()),
+            });
+        }
+    }
+
+    if confirmed_plays_changed {
+        media.save_confirmed_plays();
+    }
+
+    // Now remove empty folders in media_dir, except output and originals
+    remove_empty_folders(&media.media_dir, false);
+
+    events.push(get_garbage_size(&media));
+    events
+}
+
+fn remove_empty_folders(path: &std::path::Path, can_delete: bool) {
+    if !path.is_dir() {
+        return;
+    }
+
+    let entries = match fs::read_dir(path) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.filter_map(|e| e.ok()) {
+        let p = entry.path();
+        if p.is_dir() {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let should_exclude = name == "output" || name == "originals";
+            remove_empty_folders(&p, !should_exclude);
+        }
+    }
+
+    if can_delete {
+        if let Ok(mut entries) = fs::read_dir(path) {
+            if entries.next().is_none() {
+                println!("[rust] Removing empty directory: {:?}", path);
+                let _ = fs::remove_dir(path);
+            }
+        }
+    }
 }
