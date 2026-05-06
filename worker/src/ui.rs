@@ -26,6 +26,12 @@ pub enum TreeItemChange {
 }
 
 #[derive(Serialize)]
+pub struct MatchResult {
+    pub diff: u32,
+    pub position_ms: u64,
+}
+
+#[derive(Serialize)]
 pub enum UiEvent {
     AddTreeItem {
         tree: Tree,
@@ -44,10 +50,26 @@ pub enum UiEvent {
     ChangeGarbageSize {
         size: u64,
     },
+    ClearTrees,
     WorkerReady,
     RecalledConfirmedTmdbApiKey,
     CommandStarted(IncomingRequest),
     CommandCompleted(IncomingRequest),
+    FfmpegOutput(String),
+    SelectTreeItem {
+        tree: Tree,
+        id: String,
+    },
+    SeekPlayer {
+        position_ms: u64,
+    },
+    MatchResults {
+        tree: Tree,
+        results: std::collections::HashMap<String, MatchResult>,
+    },
+    SetTmdbStill {
+        path: String,
+    },
 }
 
 enum Mode {

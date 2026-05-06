@@ -6,6 +6,10 @@ rwkb
 target
 .idea
 
+# Debugging items
+debug_*
+rkwb
+
 # Don't commit CMake files. I am not using cmake, but clion seems driven towards it.
 CMakeLists.txt
 cmake-build-debug

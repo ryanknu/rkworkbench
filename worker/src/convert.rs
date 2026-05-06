@@ -9,6 +9,7 @@ impl From<TmdbFilm> for Film {
             name: value.title.clone(),
             release_date: value.release_date.clone(),
             film_key: format!("{} ({}) [tmdb={}]", value.original_title, &value.release_date[0..4], value.id),
+            poster_path: value.poster_path,
         }
     }
 }
@@ -21,6 +22,7 @@ impl From<TmdbTvShow> for TvShow {
             tmdb_id: value.id,
             name: value.name,
             first_air_date: value.first_air_date,
+            poster_path: value.poster_path,
         }
     }
 }
@@ -68,6 +70,7 @@ pub struct TvShowEpisodeBuilder {
     number: usize,
     name: String,
     series_key: String,
+    still_path: Option<String>,
 }
 
 impl From<TmdbTvShowEpisode> for TvShowEpisodeBuilder {
@@ -79,6 +82,7 @@ impl From<TmdbTvShowEpisode> for TvShowEpisodeBuilder {
             number: value.episode_number,
             name: value.name,
             series_key: format!("S{:0>2}E{:0>2}", value.season_number, value.episode_number),
+            still_path: value.still_path,
         }
     }
 }
@@ -94,6 +98,8 @@ impl TvShowEpisodeBuilder {
             show_name: show.name.clone(),
             show_id: show.id.clone(),
             series_key: self.series_key,
+            still_path: self.still_path,
+            still_hash: std::sync::Arc::new(std::sync::Mutex::new(None)),
         }
     }
 }

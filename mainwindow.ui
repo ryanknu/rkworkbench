@@ -168,6 +168,19 @@
          </widget>
         </item>
         <item>
+         <widget class="QLabel" name="tmdbStillLabel">
+          <property name="text">
+           <string/>
+          </property>
+          <property name="scaledContents">
+           <bool>false</bool>
+          </property>
+          <property name="alignment">
+           <set>Qt::AlignmentFlag::AlignCenter</set>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QPushButton" name="identifyBtn">
           <property name="text">
            <string>Identify Selected</string>
@@ -189,9 +202,30 @@
          </widget>
         </item>
         <item>
+         <widget class="QPushButton" name="restoreBtn">
+          <property name="text">
+           <string>Restore Trees</string>
+          </property>
+         </widget>
+        </item>
+        <item>
          <widget class="QLineEdit" name="preprocessorCommand">
           <property name="placeholderText">
            <string>Preprocessor Command</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="remoteTvLocation">
+          <property name="placeholderText">
+           <string>Remote TV Location</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QLineEdit" name="remoteMovieLocation">
+          <property name="placeholderText">
+           <string>Remote Movie Location</string>
           </property>
          </widget>
         </item>

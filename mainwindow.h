@@ -34,7 +34,9 @@ public:
 	void _removeTreeItemById(std::string tree, std::string id);
 	void _changeTreeItemColor(std::string tree, std::string id, std::string color);
 	void _changeTreeItemText(std::string tree, std::string id, std::string text);
+	void _selectTreeItem(std::string tree, std::string id);
 	void _changeGarbageSize(std::uint64_t size);
+	void _clearTrees();
 	void _hideTmdbApiKeyInput();
 
 private:
@@ -52,6 +54,7 @@ private:
 	QTimer *spinnerTimer = nullptr;
 	int spinnerIndex = 0;
 	std::string currentEncodingFile;
+	std::string lastFfmpegOutput;
 
 	void _reflowDisksTree() const;
 	void _reflowShowsTree() const;
@@ -80,7 +83,7 @@ extern "C" {
 	void lookup_film(const char* id, const char* api_key);
 	void lookup_tv(const char* id, const char* api_key);
 	void rename_identified();
-	void rsync_show(const char* show_id);
+	void rsync_show(const char* show_id, const char* tv_location, const char* movie_location);
 	void delete_tv_show(const char* show_id);
 	void delete_tv_season(const char* show_id, size_t season_number);
 	void delete_film(const char* film_id);
@@ -91,9 +94,16 @@ extern "C" {
 	void confirm_film_video_plays(const char* id);
 	void unidentify_tv_episode(const char* id);
 	void unidentify_film_video(const char* id);
-	void reencode_tv_episode(const char* id);
-	void reencode_film_video(const char* id);
+	void match_scan(const char* id);
+	void fetch_tmdb_still(const char* id, bool is_tv);
+	void reencode_tv_episode(const char* id, const char* command);
+	void reencode_film_video(const char* id, const char* command);
 	void delete_title(const char* id);
 	void undelete_title(const char* id);
 	void collect_garbage();
+
+	bool has_original_for_tv_episode(const char* id);
+	bool has_original_for_film_video(const char* id);
+	void restore_original_for_tv_episode(const char* id);
+	void restore_original_for_film_video(const char* id);
 }

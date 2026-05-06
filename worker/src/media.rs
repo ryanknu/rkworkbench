@@ -16,6 +16,8 @@ pub struct MediaState {
     pub(crate) tmdb_api_key: Option<String>,
     pub(crate) media_dir: PathBuf,
     pub(crate) config_dir: PathBuf,
+    pub(crate) hashes_dir: PathBuf,
+    pub(crate) stills_dir: PathBuf,
     pub(crate) file_backed_titles: RefCell<Vec<FileBackedTitle>>,
     pub(crate) films: RefCell<Vec<Film>>,
     pub(crate) film_videos: RefCell<Vec<FilmVideo>>,
@@ -81,6 +83,12 @@ impl MediaState {
             None
         };
 
+        let hashes_dir = config_dir.join("still_hashes_v5");
+        std::fs::create_dir_all(&hashes_dir).ok();
+
+        let stills_dir = config_dir.join("stills");
+        std::fs::create_dir_all(&stills_dir).ok();
+
         Self {
             tmdb_cache: TmdbCache {
                 dir: config_dir.clone(),
@@ -89,6 +97,8 @@ impl MediaState {
             tmdb_api_key,
             media_dir,
             config_dir,
+            hashes_dir,
+            stills_dir,
             file_backed_titles: Default::default(),
             films: Default::default(),
             film_videos: Default::default(),
@@ -110,6 +120,23 @@ impl MediaState {
                     }
                 }
             }
+        }
+    }
+
+    pub fn get_still_hash(&self, still_path: &str) -> Option<Vec<u8>> {
+        let filename = Path::new(still_path).file_name()?.to_str()?;
+        let hash_path = self.hashes_dir.join(format!("{}.bin", filename));
+        if hash_path.exists() {
+            std::fs::read(hash_path).ok()
+        } else {
+            None
+        }
+    }
+
+    pub fn save_still_hash(&self, still_path: &str, hash: &[u8]) {
+        if let Some(filename) = Path::new(still_path).file_name().and_then(|f| f.to_str()) {
+            let hash_path = self.hashes_dir.join(format!("{}.bin", filename));
+            std::fs::write(hash_path, hash).ok();
         }
     }
 
@@ -237,6 +264,7 @@ pub struct TvShow {
     pub name: String,
     pub first_air_date: String,
     pub show_key: String,
+    pub poster_path: Option<String>,
 }
 
 pub struct TvShowSeason {
@@ -254,6 +282,8 @@ pub struct TvShowEpisode {
     pub show_name: String,
     pub show_id: TvShowId,
     pub series_key: String,
+    pub still_path: Option<String>,
+    pub still_hash: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
 }
 
 #[derive(Debug, Clone)]
@@ -263,6 +293,7 @@ pub struct Film {
     pub name: String,
     pub release_date: String,
     pub film_key: String,
+    pub poster_path: Option<String>,
 }
 
 #[derive(Clone)]
@@ -290,7 +321,7 @@ pub struct FileBackedTitle {
 }
 
 impl MediaState {
-    fn is_in_output_dir(&self, path: &Path) -> bool {
+    pub fn is_in_output_dir(&self, path: &Path) -> bool {
         let out_dir = self.media_dir.join("output");
         path.starts_with(out_dir)
     }
@@ -309,6 +340,7 @@ impl MediaState {
     }
 
     pub fn read_local_media(&self) {
+        self.file_backed_titles.borrow_mut().clear();
         println!("[rust] scanning local media in {:?}", self.media_dir);
         for entry in WalkDir::new(&self.media_dir).into_iter().filter_map(|e| e.ok()) {
             if entry.path().is_dir() {
@@ -434,6 +466,20 @@ impl MediaState {
             if let Some(title) = titles.iter().find(|t| t.id == tid) {
                 let confirmed = self.confirmed_plays.borrow();
                 return confirmed.contains(&title.path);
+            }
+        }
+        false
+    }
+
+    pub fn has_original(&self, id: &MappableMediaId) -> bool {
+        let titles = self.file_backed_titles.borrow();
+        if let Some(tid) = self.get_title_id_for_mappable(id) {
+            if let Some(title) = titles.iter().find(|t| t.id == tid && self.is_in_output_dir(&t.path)) {
+                let out_dir = self.media_dir.join("output");
+                if let Ok(rel) = title.path.strip_prefix(&out_dir) {
+                    let originals_dir = self.media_dir.join("originals");
+                    return originals_dir.join(rel).exists();
+                }
             }
         }
         false
@@ -715,7 +761,7 @@ impl Film {
     }
 
     /// Creates the default presentation video for this film.
-    fn feature_presentation_video(&self) -> FilmVideo {
+    pub fn feature_presentation_video(&self) -> FilmVideo {
         FilmVideo {
             id: FilmVideoId(format!("fp.{}", self.id())),
             film_id: FilmId(self.id().to_owned()),

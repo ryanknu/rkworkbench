@@ -6,6 +6,7 @@
 #include <QMenu>
 #include <QAction>
 #include <QAudioOutput>
+#include <QPixmap>
 #include <fstream>
 #include <string>
 #include <format>
@@ -68,6 +69,7 @@ void MainWindow::_addTreeItem(std::string treeName, std::string id, std::string 
     // Make item
     auto item = new QStandardItem(text.data());
     item->setData(q(id.data()), Qt::UserRole);
+    item->setData(q(text.data()), Qt::UserRole + 2);
     if (color != "Default") {
         item->setForeground(QBrush(QColor(color.c_str())));
     }
@@ -140,10 +142,41 @@ void MainWindow::_changeTreeItemText(std::string treeName, std::string id, std::
     }
 }
 
+void MainWindow::_selectTreeItem(std::string treeName, std::string id) {
+    auto tree = ui->showsTree;
+    if (treeName == "Files") {
+        tree = ui->disksTree;
+    } else if (treeName == "Films") {
+        tree = ui->filmsTree;
+    }
+
+    auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
+    auto items = model->match(model->index(0, 0), Qt::UserRole, q(id), 1, Qt::MatchExactly | Qt::MatchRecursive);
+
+    if (!items.empty() && items.at(0).isValid()) {
+        auto index = items.at(0);
+        tree->selectionModel()->select(index, QItemSelectionModel::ClearAndSelect | QItemSelectionModel::Rows);
+        tree->setCurrentIndex(index);
+        tree->scrollTo(index);
+        if (index.parent().isValid()) {
+            tree->setExpanded(index.parent(), true);
+        }
+    }
+}
+
 void MainWindow::_changeGarbageSize(std::uint64_t size) {
     double gb = static_cast<double>(size) / (1024.0 * 1024.0 * 1024.0);
     ui->gcBtn->setText(q(std::format("Collect Garbage ({:.1f}G)", gb)));
     ui->gcBtn->setDisabled(size < 1);
+}
+
+void MainWindow::_clearTrees() {
+    auto* disksModel = dynamic_cast<QStandardItemModel *>(ui->disksTree->model());
+    disksModel->removeRows(0, disksModel->rowCount());
+    auto* showsModel = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
+    showsModel->removeRows(0, showsModel->rowCount());
+    auto* filmsModel = dynamic_cast<QStandardItemModel *>(ui->filmsTree->model());
+    filmsModel->removeRows(0, filmsModel->rowCount());
 }
 
 void MainWindow::_hideTmdbApiKeyInput() {
@@ -344,23 +377,60 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
         std::string path(fileName);
         free_string(fileName);
 
-        // Read position from LineEdit
-        try {
-            _mRequestedPlayerPosition = std::stoi(ui->seekPos->text().toStdString());
-        } catch (...) {}
+        // Reset position for new file
+        _mRequestedPlayerPosition = 0;
+        ui->seekPos->setText("0");
+        ui->tmdbStillLabel->clear();
 
         player->stop();
         player->setSource(QUrl::fromLocalFile(q(path)));
         player->setPlaybackRate(1.0);
         player->play();
         player->pause();
-});
+    });
+
+    auto handleTsSeek = [&](QTreeView* tree) {
+        auto text = tree->currentIndex().data(Qt::DisplayRole).toString().toStdString();
+        size_t tsPos = text.find("ts=");
+        if (tsPos != std::string::npos) {
+            size_t endPos = text.find("]", tsPos);
+            if (endPos == std::string::npos) endPos = text.length();
+            std::string tsStr = text.substr(tsPos + 3, endPos - (tsPos + 3));
+            try {
+                uint64_t ts = std::stoull(tsStr);
+                _mRequestedPlayerPosition = ts;
+                player->setPosition(ts);
+            } catch (...) {}
+        }
+    };
+
+    connect(ui->showsTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &, const QItemSelection &) {
+        handleTsSeek(ui->showsTree);
+        auto id = _getIdForSelectedItemInTree(ui->showsTree);
+        ui->tmdbStillLabel->clear();
+        if (!id.empty()) {
+            fetch_tmdb_still(id.c_str(), true);
+        }
+    });
+
+    connect(ui->filmsTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &, const QItemSelection &) {
+        handleTsSeek(ui->filmsTree);
+        auto id = _getIdForSelectedItemInTree(ui->filmsTree);
+        ui->tmdbStillLabel->clear();
+        if (!id.empty()) {
+            fetch_tmdb_still(id.c_str(), false);
+        }
+    });
 }
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ui(new Ui::MainWindow)
 {
     ui->setupUi(this);
+    ui->ffmpegStatusWidget->setMinimumHeight(30);
+    ui->preprocessorCommand->setText("ffmpeg -i ${in} -c:v libx265 -crf 18 -preset slow -pix_fmt yuv420p10le -c:a copy ${out}");
+    ui->remoteTvLocation->setText("root@10.4.6.2:/mnt/user/emby/tv");
+    ui->remoteMovieLocation->setText("root@10.4.6.2:/mnt/user/emby/movies");
     ui->ffmpegStatusWidget->hide();
     setMouseTrackingRecursive(this, true);
 
@@ -414,7 +484,7 @@ MainWindow::MainWindow(QWidget *parent)
             // that can make the experience feel bizarre.
             auto maximum = ui->videoSeek->maximum();
             auto requested = _mRequestedPlayerPosition;
-            if (requested > maximum - 10000) {
+            if (maximum > 15000 && requested > maximum - 10000) {
                 requested = maximum - 10000;
             }
             player->setPosition(requested);
@@ -436,6 +506,10 @@ MainWindow::MainWindow(QWidget *parent)
         QMenu menu;
         QAction * deleteAction = menu.addAction(q("Delete Title"));
         QAction * unDeleteAction = menu.addAction(q("Undelete Title"));
+        QAction * matchScanAction = nullptr;
+        if (index.parent().isValid()) {
+            matchScanAction = menu.addAction(q("Match Scan"));
+        }
 
         connect(deleteAction, &QAction::triggered, [&]() {
             // Stop the media player, if we remove the file it's accessing we'll segfault.
@@ -450,6 +524,13 @@ MainWindow::MainWindow(QWidget *parent)
             auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
             undelete_title(titleId.c_str());
         });
+
+        if (matchScanAction) {
+            connect(matchScanAction, &QAction::triggered, [&]() {
+                auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
+                match_scan(titleId.c_str());
+            });
+        }
 
         menu.exec(ui->disksTree->viewport()->mapToGlobal(pos));
     });
@@ -482,6 +563,7 @@ MainWindow::MainWindow(QWidget *parent)
 
         QMenu menu;
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
+        QAction * reencodeShowAction = menu.addAction(q("Re-encode Show (ffmpeg)"));
 
         if (episodeId.empty()) {
             auto deleteMenu = menu.addMenu(q("Remove Metadata"));
@@ -501,6 +583,13 @@ MainWindow::MainWindow(QWidget *parent)
             auto confirmAction = menu.addAction(q("Confirm Plays"));
             auto unidentifyAction = menu.addAction(q("Unidentify"));
             auto reencodeAction = menu.addAction(q("Re-encode (ffmpeg)"));
+
+            if (has_original_for_tv_episode(episodeId.c_str())) {
+                auto restoreAction = menu.addAction(q("Restore Original"));
+                connect(restoreAction, &QAction::triggered, [episodeId]() {
+                    restore_original_for_tv_episode(episodeId.c_str());
+                });
+            }
 
             auto deleteMenu = menu.addMenu(q("Remove Metadata"));
             auto deleteShow = deleteMenu->addAction(q("Remove Show"));
@@ -532,14 +621,33 @@ MainWindow::MainWindow(QWidget *parent)
             });
 
             connect(reencodeAction, &QAction::triggered, [this, episodeId]() {
-                reencode_tv_episode(episodeId.c_str());
+                auto command = ui->preprocessorCommand->text().toStdString();
+                reencode_tv_episode(episodeId.c_str(), command.c_str());
                 this->ffmpegQueueCount++;
                 this->_updateFfmpegStatus();
             });
         }
 
-        connect(uploadAction, &QAction::triggered, [showId]() {
-            rsync_show(showId.c_str());
+        connect(uploadAction, &QAction::triggered, [this, showId]() {
+            auto tvLoc = ui->remoteTvLocation->text().toStdString();
+            auto movieLoc = ui->remoteMovieLocation->text().toStdString();
+            rsync_show(showId.c_str(), tvLoc.c_str(), movieLoc.c_str());
+        });
+
+        connect(reencodeShowAction, &QAction::triggered, [this, index]() {
+            auto* model = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
+            QModelIndex showIndex = index.parent().isValid() ? index.parent() : index;
+            int rows = model->rowCount(showIndex);
+            auto command = ui->preprocessorCommand->text().toStdString();
+            for (int i = 0; i < rows; ++i) {
+                QModelIndex epIndex = model->index(i, 0, showIndex);
+                std::string epId = model->data(epIndex, Qt::UserRole).toString().toStdString();
+                if (!epId.empty()) {
+                    reencode_tv_episode(epId.c_str(), command.c_str());
+                    this->ffmpegQueueCount++;
+                }
+            }
+            this->_updateFfmpegStatus();
         });
 
         menu.exec(ui->showsTree->viewport()->mapToGlobal(pos));
@@ -587,6 +695,13 @@ MainWindow::MainWindow(QWidget *parent)
             auto unidentifyAction = menu.addAction(q("Unidentify"));
             auto reencodeAction = menu.addAction(q("Re-encode (ffmpeg)"));
 
+            if (has_original_for_film_video(filmVideoId.c_str())) {
+                auto restoreAction = menu.addAction(q("Restore Original"));
+                connect(restoreAction, &QAction::triggered, [filmVideoId]() {
+                    restore_original_for_film_video(filmVideoId.c_str());
+                });
+            }
+
             auto deleteMenu = menu.addMenu(q("Remove Metadata"));
             auto deleteFilmAction = deleteMenu->addAction(q("Remove Film"));
             auto deleteVideoAction = deleteMenu->addAction(q("Remove Video"));
@@ -608,14 +723,17 @@ MainWindow::MainWindow(QWidget *parent)
             });
 
             connect(reencodeAction, &QAction::triggered, [this, filmVideoId]() {
-                reencode_film_video(filmVideoId.c_str());
+                auto command = ui->preprocessorCommand->text().toStdString();
+                reencode_film_video(filmVideoId.c_str(), command.c_str());
                 this->ffmpegQueueCount++;
                 this->_updateFfmpegStatus();
             });
         }
 
-        connect(uploadAction, &QAction::triggered, [filmId]() {
-            rsync_show(filmId.c_str());
+        connect(uploadAction, &QAction::triggered, [this, filmId]() {
+            auto tvLoc = ui->remoteTvLocation->text().toStdString();
+            auto movieLoc = ui->remoteMovieLocation->text().toStdString();
+            rsync_show(filmId.c_str(), tvLoc.c_str(), movieLoc.c_str());
         });
 
         menu.exec(ui->filmsTree->viewport()->mapToGlobal(pos));
@@ -676,6 +794,10 @@ MainWindow::MainWindow(QWidget *parent)
 
     connect(ui->gcBtn, &QPushButton::clicked, [&]() {
         collect_garbage();
+    });
+
+    connect(ui->restoreBtn, &QPushButton::clicked, [&]() {
+        initial_load();
     });
 
     connect(worker, &CommandWorker::commandCompleted, this, [&]() {
@@ -753,11 +875,19 @@ void MainWindow::mouseMoveEvent(QMouseEvent *event)
 }
 
 void MainWindow::_updateFfmpegStatus() {
+    qDebug() << "_updateFfmpegStatus: active=" << ffmpegActiveCount << "queue=" << ffmpegQueueCount << "output=" << q(lastFfmpegOutput);
     if (ffmpegActiveCount > 0 || ffmpegQueueCount > 0) {
         ui->ffmpegStatusWidget->show();
         if (ffmpegActiveCount > 0) {
             spinnerTimer->start(250);
-            ui->statusLabel->setText(q(std::format("Encoding: {} ({} in queue)", currentEncodingFile, ffmpegQueueCount)));
+            std::string prefix = "Encoding";
+            if (lastFfmpegOutput.find("Match Scan") != std::string::npos) {
+                prefix = "Scanning";
+            }
+            auto status = lastFfmpegOutput.empty()
+                ? std::format("{}: {} ({} in queue)", prefix, currentEncodingFile, ffmpegQueueCount)
+                : std::format("{}: {} | {} ({} in queue)", prefix, currentEncodingFile, lastFfmpegOutput, ffmpegQueueCount);
+            ui->statusLabel->setText(q(status));
         } else {
             spinnerTimer->stop();
             ui->spinnerLabel->setText("-");
@@ -775,6 +905,8 @@ void MainWindow::processMessage(std::string message) {
         initial_load();
     } else if (message == "\"RecalledConfirmedTmdbApiKey\"") {
         _hideTmdbApiKeyInput();
+    } else if (message == "\"ClearTrees\"") {
+        _clearTrees();
     }
 
     // The message is (probably) JSON
@@ -789,7 +921,7 @@ void MainWindow::processMessage(std::string message) {
         if (m.contains("CommandStarted")) {
             auto req = m["CommandStarted"];
             if (req.contains("ReencodeRequest")) {
-                std::string id = req["ReencodeRequest"][0].get<std::string>();
+                std::string id = req["ReencodeRequest"].is_array() ? req["ReencodeRequest"][0].get<std::string>() : req["ReencodeRequest"].get<std::string>();
                 auto fileName = get_filename_for_tv_episode_id(id.c_str());
                 if (fileName) {
                     currentEncodingFile = fileName;
@@ -801,7 +933,7 @@ void MainWindow::processMessage(std::string message) {
                 _updateFfmpegStatus();
             }
             if (req.contains("ReencodeFilmRequest")) {
-                std::string id = req["ReencodeFilmRequest"][0].get<std::string>();
+                std::string id = req["ReencodeFilmRequest"].is_array() ? req["ReencodeFilmRequest"][0].get<std::string>() : req["ReencodeFilmRequest"].get<std::string>();
                 auto fileName = get_filename_for_film_video_id(id.c_str());
                 if (fileName) {
                     currentEncodingFile = fileName;
@@ -812,18 +944,80 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
             }
+            if (req.contains("MatchScan")) {
+                std::string id = req["MatchScan"].is_array() ? req["MatchScan"][0].get<std::string>() : req["MatchScan"].get<std::string>();
+                auto fileName = get_filename_for_title_id(id.c_str());
+                if (fileName) {
+                    currentEncodingFile = fileName;
+                    free_string(fileName);
+                }
+
+                ffmpegActiveCount++;
+                _updateFfmpegStatus();
+            }
         }
     } catch (...) {}
 
     try {
         if (m.contains("CommandCompleted")) {
             auto req = m["CommandCompleted"];
-            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest")) {
+            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest") || req.contains("MatchScan")) {
                 ffmpegActiveCount = std::max(0, ffmpegActiveCount - 1);
                 if (ffmpegActiveCount == 0) {
                     currentEncodingFile = "";
+                    lastFfmpegOutput = "";
                 }
                 _updateFfmpegStatus();
+            }
+        }
+    } catch (...) {}
+
+    try {
+        if (m.contains("MatchResults")) {
+            auto treeName = m["MatchResults"]["tree"].get<std::string>();
+            auto results = m["MatchResults"]["results"];
+
+            auto tree = ui->showsTree;
+            if (treeName == "Films") {
+                tree = ui->filmsTree;
+            }
+
+            auto* model = dynamic_cast<QStandardItemModel *>(tree->model());
+            for (int i = 0; i < model->rowCount(); ++i) {
+                auto parentItem = model->item(i);
+                bool parentVisible = false;
+                for (int j = 0; j < parentItem->rowCount(); ++j) {
+                    auto childItem = parentItem->child(j);
+                    std::string id = childItem->data(Qt::UserRole).toString().toStdString();
+                    std::string originalText = childItem->data(Qt::UserRole + 2).toString().toStdString();
+                    if (originalText.empty()) originalText = childItem->data(Qt::DisplayRole).toString().toStdString();
+
+                    if (results.contains(id)) {
+                        auto result = results[id];
+                        uint32_t diff = result["diff"].get<uint32_t>();
+                        uint64_t ts = result["position_ms"].get<uint64_t>();
+
+                        childItem->setText(q(std::format("{} [diff={} ts={}]", originalText, diff, ts)));
+                        tree->setRowHidden(j, model->indexFromItem(parentItem), false);
+                        parentVisible = true;
+                    } else {
+                        // Keep hidden if no result (usually means no still image available)
+                        tree->setRowHidden(j, model->indexFromItem(parentItem), true);
+                    }
+                }
+                tree->setRowHidden(i, QModelIndex(), !parentVisible);
+            }
+        }
+    } catch (...) {}
+
+    try {
+        if (m.contains("SetTmdbStill")) {
+            auto path = m["SetTmdbStill"]["path"].get<std::string>();
+            QPixmap pixmap(q(path));
+            if (!pixmap.isNull()) {
+                // Scale to fit within the same dimensions as the video player.
+                // This ensures it doesn't push the buttons off-screen by being too tall.
+                ui->tmdbStillLabel->setPixmap(pixmap.scaled(ui->videoWidget->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
             }
         }
     } catch (...) {}
@@ -857,6 +1051,21 @@ void MainWindow::processMessage(std::string message) {
     } catch (...) {}
 
     try {
+        auto tree = m["SelectTreeItem"]["tree"].get<std::string>();
+        auto id = m["SelectTreeItem"]["id"].get<std::string>();
+
+        _selectTreeItem(tree, id);
+    } catch (...) {}
+
+    try {
+        if (m.contains("SeekPlayer")) {
+            auto pos = m["SeekPlayer"]["position_ms"].get<int>();
+            _mRequestedPlayerPosition = pos;
+            player->setPosition(pos);
+        }
+    } catch (...) {}
+
+    try {
         auto tree = m["RemoveTreeItemById"]["tree"].get<std::string>();
         auto id = m["RemoveTreeItemById"]["id"].get<std::string>();
 
@@ -866,6 +1075,13 @@ void MainWindow::processMessage(std::string message) {
     try {
         auto garbageSize = m["ChangeGarbageSize"]["size"].get<std::uint64_t>();
         _changeGarbageSize(garbageSize);
+    } catch (...) {}
+
+    try {
+        if (m.contains("FfmpegOutput")) {
+            lastFfmpegOutput = m["FfmpegOutput"].get<std::string>();
+            _updateFfmpegStatus();
+        }
     } catch (...) {}
 }
 

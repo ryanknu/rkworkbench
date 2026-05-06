@@ -89,7 +89,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 LookupFilm(tmdb_id, tmdb_api_key) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key),
                 LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
                 RenameIdentified => requests::rename_identified(&MEDIA),
-                RsyncRequest(id) => requests::rsync_show(&MEDIA, id),
+                RsyncRequest(id, tv_loc, movie_loc) => requests::rsync_show(&MEDIA, id, tv_loc, movie_loc),
                 ConfirmPlay(id) => requests::confirm_play(&MEDIA, id),
                 DeleteTvShow(id) => requests::delete_tv_show(&MEDIA, id),
                 DeleteTvSeason(id, season) => requests::delete_tv_season(&MEDIA, id, season),
@@ -100,6 +100,9 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 Unidentify(id) => requests::unidentify_tv_episode(&MEDIA, id),
                 UnidentifyFilm(id) => requests::unidentify_film_video(&MEDIA, id),
                 CollectGarbage => requests::collect_garbage(&MEDIA),
+                RestoreOriginal(id) => requests::restore_original(&MEDIA, id),
+                MatchScan(id) => requests::match_scan(&MEDIA, id, |e| push!(cb, ptrd, &e)),
+                FetchTmdbStill(id) => requests::fetch_tmdb_still(&MEDIA, id),
                 _ => vec![],
             };
 
@@ -124,8 +127,8 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
 
             // Process `message`
             let events = match message.clone() {
-                ReencodeRequest(id) => requests::reencode_tv_episode(&MEDIA, id),
-                ReencodeFilmRequest(id) => requests::reencode_film_video(&MEDIA, id),
+                ReencodeRequest(id, command) => requests::reencode_tv_episode(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
+                ReencodeFilmRequest(id, command) => requests::reencode_film_video(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
                 _ => vec![],
             };
 
@@ -205,12 +208,14 @@ pub extern "C" fn rename_identified() {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rsync_show(show_id: *const c_char) {
+pub extern "C" fn rsync_show(show_id: *const c_char, tv_location: *const c_char, movie_location: *const c_char) {
     println!("[rust] rsync_show called");
 
     let show_id = cstr(show_id);
+    let tv_location = cstr(tv_location);
+    let movie_location = cstr(movie_location);
 
-    SENDER.get().map(|s| s.lock().unwrap().send(RsyncRequest(show_id)));
+    SENDER.get().map(|s| s.lock().unwrap().send(RsyncRequest(show_id, tv_location, movie_location)));
 }
 
 #[unsafe(no_mangle)]
@@ -277,12 +282,13 @@ pub extern "C" fn unidentify_film_video(id: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn reencode_film_video(id: *const c_char) {
+pub extern "C" fn reencode_film_video(id: *const c_char, command: *const c_char) {
     println!("[rust] reencode_film_video called");
 
     let id = FilmVideoId(cstr(id));
+    let command = cstr(command);
 
-    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeFilmRequest(id)));
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeFilmRequest(id, command)));
 }
 
 #[unsafe(no_mangle)]
@@ -295,12 +301,36 @@ pub extern "C" fn unidentify_tv_episode(id: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn reencode_tv_episode(id: *const c_char) {
+pub extern "C" fn match_scan(id: *const c_char) {
+    println!("[rust] match_scan called");
+
+    let id = FileBackedTitleId(cstr(id));
+
+    SENDER.get().map(|s| s.lock().unwrap().send(MatchScan(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fetch_tmdb_still(id: *const c_char, is_tv: bool) {
+    println!("[rust] fetch_tmdb_still called");
+
+    let id_str = cstr(id);
+    let id = if is_tv {
+        MappableMediaId::TvEpisode(TvEpisodeId(id_str))
+    } else {
+        MappableMediaId::FilmVideo(FilmVideoId(id_str))
+    };
+
+    SENDER.get().map(|s| s.lock().unwrap().send(FetchTmdbStill(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn reencode_tv_episode(id: *const c_char, command: *const c_char) {
     println!("[rust] reencode_tv_episode called");
 
     let id = TvEpisodeId(cstr(id));
+    let command = cstr(command);
 
-    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeRequest(id)));
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeRequest(id, command)));
 }
 
 /// Returns the filename for a given id.
@@ -389,6 +419,38 @@ pub extern "C" fn delete_title(title_id: *const c_char) {
     let title_id = FileBackedTitleId(cstr(title_id));
 
     SENDER.get().map(|s| s.lock().unwrap().send(DeleteTitle(title_id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn has_original_for_tv_episode(id: *const c_char) -> bool {
+    let media = match MEDIA.get().unwrap().lock() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let id = MappableMediaId::TvEpisode(TvEpisodeId(cstr(id)));
+    media.has_original(&id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn has_original_for_film_video(id: *const c_char) -> bool {
+    let media = match MEDIA.get().unwrap().lock() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let id = MappableMediaId::FilmVideo(FilmVideoId(cstr(id)));
+    media.has_original(&id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn restore_original_for_tv_episode(id: *const c_char) {
+    let id = MappableMediaId::TvEpisode(TvEpisodeId(cstr(id)));
+    SENDER.get().map(|s| s.lock().unwrap().send(RestoreOriginal(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn restore_original_for_film_video(id: *const c_char) {
+    let id = MappableMediaId::FilmVideo(FilmVideoId(cstr(id)));
+    SENDER.get().map(|s| s.lock().unwrap().send(RestoreOriginal(id)));
 }
 
 #[unsafe(no_mangle)]
