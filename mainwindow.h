@@ -55,6 +55,7 @@ private:
 	int rsyncActiveCount = 0;
 	QTimer *spinnerTimer = nullptr;
 	int spinnerIndex = 0;
+	std::string _mediaDir;
 	std::string currentEncodingFile;
 	std::string currentRsyncFile;
 	std::string lastFfmpegOutput;
@@ -69,6 +70,10 @@ private:
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _queueTask(std::string cmd);
 	void _queueTasks(std::vector<std::string> cmds);
+	void _findVlc();
+	QString _vlcProgram;
+	QStringList _vlcArgs;
+	bool _vlcFound = false;
 };
 
 void callback_wrapper(void* ptr, const char* message);

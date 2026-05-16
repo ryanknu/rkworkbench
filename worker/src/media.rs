@@ -75,6 +75,11 @@ impl MediaState {
             panic!("Cannot find media.");
         }
 
+        // Canonicalize to absolute path if possible
+        if let Ok(abs) = std::fs::canonicalize(&media_dir) {
+            media_dir = abs;
+        }
+
         // Read api key
         let tmdb_key_file = config_dir.join("tmdb.key");
         let tmdb_api_key = if tmdb_key_file.exists() {

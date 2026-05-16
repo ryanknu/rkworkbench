@@ -354,19 +354,14 @@ pub extern "C" fn get_filename_for_tv_episode_id(id: *const c_char) -> *mut c_ch
     let id = TvEpisodeId(cstr(id));
     let media = MEDIA.get().unwrap().lock().unwrap();
 
-    let episode_info = {
-        let episodes = media.tv_show_episodes.borrow();
-        let tv_shows = media.tv_shows.borrow();
-        episodes.iter().find(|e| e.id == id).and_then(|e| {
-            tv_shows.iter().find(|s| s.id == e.show_id).map(|s| (s.show_key.clone(), e.series_key.clone()))
-        })
-    };
+    let path = media.get_title_id_for_mappable(&MappableMediaId::TvEpisode(id))
+        .and_then(|tid| media.get_file_backed_title_path(&tid));
 
-    match episode_info {
-        Some((_show_key, series_key)) => {
-            let s = format!("{}.mkv", series_key);
-            let c_str = CString::new(s).unwrap();
-            c_str.into_raw()
+    match path {
+        Some(path) => {
+            let rust_string = path.to_string_lossy().to_string();
+            let c_string = CString::new(rust_string).expect("CString::new failed");
+            c_string.into_raw()
         }
         None => std::ptr::null_mut(),
     }
@@ -378,19 +373,14 @@ pub extern "C" fn get_filename_for_film_video_id(id: *const c_char) -> *mut c_ch
     let id = FilmVideoId(cstr(id));
     let media = MEDIA.get().unwrap().lock().unwrap();
 
-    let video_info = {
-        let videos = media.film_videos.borrow();
-        videos.iter().find(|v| v.id == id).map(|v| v.get_ideal_storage_path())
-    };
+    let path = media.get_title_id_for_mappable(&MappableMediaId::FilmVideo(id))
+        .and_then(|tid| media.get_file_backed_title_path(&tid));
 
-    match video_info {
-        Some(rel_path) => {
-            if let Some(last) = rel_path.last() {
-                let c_str = CString::new(last.clone()).unwrap();
-                c_str.into_raw()
-            } else {
-                std::ptr::null_mut()
-            }
+    match path {
+        Some(path) => {
+            let rust_string = path.to_string_lossy().to_string();
+            let c_string = CString::new(rust_string).expect("CString::new failed");
+            c_string.into_raw()
         }
         None => std::ptr::null_mut(),
     }

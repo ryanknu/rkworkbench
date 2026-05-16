@@ -6,6 +6,7 @@
 #include <QMenu>
 #include <QAction>
 #include <QAudioOutput>
+#include <QProcess>
 #include <QPixmap>
 #include <fstream>
 #include <string>
@@ -340,6 +341,7 @@ std::string MainWindow::_getIdForSelectedItemInTree(QTreeView *&tree)
 
 void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     appModel = theModel;
+    _mediaDir = mediaDir;
 
     // Spin up background thread (2)
     start_rust_processing(this, mediaDir.c_str(), callback_wrapper);
@@ -447,6 +449,7 @@ MainWindow::MainWindow(QWidget *parent)
     setMouseTrackingRecursive(this, true);
 
     ui->filmsTree->hide();
+    _findVlc();
 
     // Spinner timer
     spinnerTimer = new QTimer(this);
@@ -517,6 +520,27 @@ MainWindow::MainWindow(QWidget *parent)
         }
 
         QMenu menu;
+        auto titleId = index.data(Qt::UserRole).toString().toStdString();
+        auto fileName = get_filename_for_title_id(titleId.c_str());
+        if (fileName && _vlcFound) {
+            std::string path(fileName);
+            free_string(fileName);
+            QAction * vlcAction = menu.addAction(q("Open in VLC"));
+            connect(vlcAction, &QAction::triggered, [this, path]() {
+                QStringList args = _vlcArgs;
+                args.append(QString::fromStdString(path));
+                if (_vlcProgram == "flatpak") {
+                    args.append("@@");
+                }
+                qDebug() << "Launching VLC:" << _vlcProgram << args;
+                if (!QProcess::startDetached(_vlcProgram, args)) {
+                    qDebug() << "Failed to start VLC process";
+                }
+            });
+        } else if (fileName) {
+            free_string(fileName);
+        }
+
         QAction * deleteAction = menu.addAction(q("Delete Title"));
         QAction * unDeleteAction = menu.addAction(q("Undelete Title"));
         QAction * matchScanAction = nullptr;
@@ -576,6 +600,28 @@ MainWindow::MainWindow(QWidget *parent)
         qDebug() << "showId:" << q(showId) << "episodeId:" << q(episodeId);
 
         QMenu menu;
+
+        QBrush brush = index.data(Qt::ForegroundRole).value<QBrush>();
+        if ((brush.color() == QColor("green") || brush.color() == QColor("cyan")) && _vlcFound) {
+            auto fileName = get_filename_for_tv_episode_id(id.c_str());
+            if (fileName) {
+                std::string path(fileName);
+                free_string(fileName);
+                QAction * vlcAction = menu.addAction(q("Open in VLC"));
+                connect(vlcAction, &QAction::triggered, [this, path]() {
+                    QStringList args = _vlcArgs;
+                    args.append(QString::fromStdString(path));
+                    if (_vlcProgram == "flatpak") {
+                        args.append("@@");
+                    }
+                    qDebug() << "Launching VLC:" << _vlcProgram << args;
+                    if (!QProcess::startDetached(_vlcProgram, args)) {
+                        qDebug() << "Failed to start VLC process";
+                    }
+                });
+            }
+        }
+
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
         QAction * reencodeShowAction = menu.addAction(q("Re-encode Show (ffmpeg)"));
 
@@ -688,6 +734,28 @@ MainWindow::MainWindow(QWidget *parent)
         if (filmId.empty()) return;
 
         QMenu menu;
+
+        QBrush brush = index.data(Qt::ForegroundRole).value<QBrush>();
+        if ((brush.color() == QColor("green") || brush.color() == QColor("cyan")) && _vlcFound) {
+            auto fileName = get_filename_for_film_video_id(id.c_str());
+            if (fileName) {
+                std::string path(fileName);
+                free_string(fileName);
+                QAction * vlcAction = menu.addAction(q("Open in VLC"));
+                connect(vlcAction, &QAction::triggered, [this, path]() {
+                    QStringList args = _vlcArgs;
+                    args.append(QString::fromStdString(path));
+                    if (_vlcProgram == "flatpak") {
+                        args.append("@@");
+                    }
+                    qDebug() << "Launching VLC:" << _vlcProgram << args;
+                    if (!QProcess::startDetached(_vlcProgram, args)) {
+                        qDebug() << "Failed to start VLC process";
+                    }
+                });
+            }
+        }
+
         QAction * uploadAction = menu.addAction(q("Upload Film (rsync)"));
 
         std::string filmVideoId;
@@ -941,6 +1009,43 @@ void MainWindow::_updateRsyncStatus() {
         ui->rsyncStatusWidget->hide();
         if (ffmpegActiveCount == 0) spinnerTimer->stop();
     }
+}
+
+void MainWindow::_findVlc() {
+    if (_vlcFound) return;
+
+    // Try standard vlc
+    QProcess which;
+    which.start("which", {"vlc"});
+    which.waitForFinished();
+    if (which.exitCode() == 0) {
+        _vlcProgram = "vlc";
+        _vlcArgs = {};
+        _vlcFound = true;
+        qDebug() << "Found vlc in PATH";
+        return;
+    }
+
+    // Try flatpak
+    which.start("which", {"flatpak"});
+    which.waitForFinished();
+    if (which.exitCode() == 0) {
+        QProcess fpList;
+        fpList.start("flatpak", {"list", "--columns=application"});
+        fpList.waitForFinished();
+        QString output = fpList.readAllStandardOutput();
+        if (output.contains("org.videolan.VLC")) {
+            _vlcProgram = "flatpak";
+            // We use the user's recommended flags, but omit branch/arch for portability.
+            // We include --file-forwarding and @@u as they are key for flatpak file access.
+            _vlcArgs = {"run", "--file-forwarding", "org.videolan.VLC", "--started-from-file", "@@u"};
+            _vlcFound = true;
+            qDebug() << "Found org.videolan.VLC in flatpak";
+            return;
+        }
+    }
+
+    qDebug() << "VLC not found (neither 'vlc' in PATH nor 'org.videolan.VLC' in flatpak)";
 }
 
 void MainWindow::processMessage(std::string message) {
