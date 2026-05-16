@@ -89,7 +89,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 LookupFilm(tmdb_id, tmdb_api_key) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key),
                 LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
                 RenameIdentified => requests::rename_identified(&MEDIA),
-                RsyncRequest(id, tv_loc, movie_loc) => requests::rsync_show(&MEDIA, id, tv_loc, movie_loc),
+                RsyncRequest(id, tv_loc, movie_loc) => requests::rsync_show(&MEDIA, id, tv_loc, movie_loc, |e| push!(cb, ptrd, &e)),
                 ConfirmPlay(id) => requests::confirm_play(&MEDIA, id),
                 DeleteTvShow(id) => requests::delete_tv_show(&MEDIA, id),
                 DeleteTvSeason(id, season) => requests::delete_tv_season(&MEDIA, id, season),
@@ -101,7 +101,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 UnidentifyFilm(id) => requests::unidentify_film_video(&MEDIA, id),
                 CollectGarbage => requests::collect_garbage(&MEDIA),
                 RestoreOriginal(id) => requests::restore_original(&MEDIA, id),
-                MatchScan(id) => requests::match_scan(&MEDIA, id, |e| push!(cb, ptrd, &e)),
+                MatchScan(id, command) => requests::match_scan(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
                 FetchTmdbStill(id) => requests::fetch_tmdb_still(&MEDIA, id),
                 _ => vec![],
             };
@@ -301,12 +301,13 @@ pub extern "C" fn unidentify_tv_episode(id: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn match_scan(id: *const c_char) {
+pub extern "C" fn match_scan(id: *const c_char, command: *const c_char) {
     println!("[rust] match_scan called");
 
     let id = FileBackedTitleId(cstr(id));
+    let command = cstr(command);
 
-    SENDER.get().map(|s| s.lock().unwrap().send(MatchScan(id)));
+    SENDER.get().map(|s| s.lock().unwrap().send(MatchScan(id, command)));
 }
 
 #[unsafe(no_mangle)]

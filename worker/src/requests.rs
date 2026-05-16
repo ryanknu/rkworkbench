@@ -5,8 +5,10 @@ use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use std::fs;
 use std::io::{BufReader, Read, Write};
+use std::thread;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
+use rayon::prelude::*;
 use crate::convert::{FilmVideoBuilder, TvShowEpisodeBuilder};
 
 type MediaState = OnceLock<Mutex<crate::media::MediaState>>;
@@ -32,7 +34,7 @@ pub enum IncomingRequest {
     ReencodeFilmRequest(FilmVideoId, String),
     CollectGarbage,
     RestoreOriginal(MappableMediaId),
-    MatchScan(FileBackedTitleId),
+    MatchScan(FileBackedTitleId, String),
     FetchTmdbStill(MappableMediaId),
 }
 
@@ -97,6 +99,18 @@ fn add_to_library(media: &crate::media::MediaState, item: TmdbItem) -> Option<Tm
             }
         },
         _ => Some(item),
+    }
+}
+
+fn strip_id_prefix(id: &str) -> String {
+    if id.starts_with("show.") {
+        id[5..].to_owned()
+    } else if id.starts_with("ep.") {
+        id[3..].to_owned()
+    } else if id.starts_with("film.") {
+        id[5..].to_owned()
+    } else {
+        id.to_owned()
     }
 }
 
@@ -321,16 +335,17 @@ pub fn rename_identified(media: &MediaState) -> Vec<UiEvent> {
     events
 }
 
-pub fn rsync_show(media: &MediaState, id: String, tv_loc: String, movie_loc: String) -> Vec<UiEvent> {
+pub fn rsync_show(media: &MediaState, id: String, tv_loc: String, movie_loc: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let raw_id = strip_id_prefix(&id);
     let (folder_name, source, destination, config_dir) = {
         let media = unlock_media!(media);
 
-        let (folder_name, remote_base) = if let Some(show) = media.get_show_by_id(&TvShowId(id.clone())) {
+        let (folder_name, remote_base) = if let Some(show) = media.get_show_by_id(&TvShowId(raw_id.clone())) {
             (show.show_key.clone(), tv_loc)
-        } else if let Some(film) = media.get_film_by_id(&FilmId(id.clone())) {
+        } else if let Some(film) = media.get_film_by_id(&FilmId(raw_id.clone())) {
             (film.film_key().to_owned(), movie_loc)
         } else {
-            println!("Media not found for rsync: {:?}", id);
+            println!("Media not found for rsync: {:?}", raw_id);
             return vec![];
         };
 
@@ -347,38 +362,60 @@ pub fn rsync_show(media: &MediaState, id: String, tv_loc: String, movie_loc: Str
         (folder_name, source, destination, media.config_dir.clone())
     };
 
+    if !source.exists() {
+        println!("[rust] rsync source directory does not exist: {:?}", source);
+        return vec![];
+    }
+
     println!("[rust] rsyncing {:?} to {:?}", source, destination);
 
     // Spawn rsync
-    let status = std::process::Command::new("rsync")
-        .arg("-a")
+    let child_res = std::process::Command::new("rsync")
+        .arg("-aP")
         .arg(format!("{}/", source.to_string_lossy()))
         .arg(&destination)
-        .status();
+        .stdout(Stdio::piped())
+        .spawn();
 
-    match status {
-        Ok(s) if s.success() => {
-            println!("[rust] rsync successful for {}", folder_name);
-            // Log rsynced files
-            let log_file = config_dir.join("rsynced_files.txt");
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(log_file)
-            {
-                // We should log all files in the source directory
-                for entry in WalkDir::new(&source).into_iter().filter_map(|e| e.ok()) {
-                    if entry.path().is_file() {
-                        let _ = writeln!(file, "{}", entry.path().to_string_lossy());
+    match child_res {
+        Ok(mut child) => {
+            if let Some(stdout) = child.stdout.take() {
+                handle_rsync_progress(stdout, &on_progress);
+            }
+
+            let status = child.wait();
+
+            match status {
+                Ok(s) if s.success() => {
+                    println!("[rust] rsync successful for {}", folder_name);
+                    // Log rsynced files
+                    let log_file = config_dir.join("rsynced_files.txt");
+                    if let Ok(mut file) = std::fs::OpenOptions::new()
+                        .create(true)
+                        .append(true)
+                        .open(log_file)
+                    {
+                        // We should log all files in the source directory
+                        for entry in WalkDir::new(&source).into_iter().filter_map(|e| e.ok()) {
+                            if entry.path().is_file() {
+                                let _ = writeln!(file, "{}", entry.path().to_string_lossy());
+                            }
+                        }
                     }
+                }
+                Ok(s) => {
+                    println!("[rust] rsync failed for {} with status: {:?}", folder_name, s);
+                    on_progress(UiEvent::RsyncOutput(format!("Error: rsync exited with status {:?}", s)));
+                }
+                Err(e) => {
+                    println!("[rust] failed to wait for rsync: {:?}", e);
+                    on_progress(UiEvent::RsyncOutput(format!("Error: failed to wait for rsync: {:?}", e)));
                 }
             }
         }
-        Ok(s) => {
-            println!("[rust] rsync failed for {} with status: {:?}", folder_name, s);
-        }
         Err(e) => {
             println!("[rust] failed to execute rsync: {:?}", e);
+            on_progress(UiEvent::RsyncOutput(format!("Error: failed to execute rsync: {:?}", e)));
         }
     }
 
@@ -420,7 +457,7 @@ pub fn confirm_play(media: &MediaState, id: MappableMediaId) -> Vec<UiEvent> {
 
 pub fn delete_tv_show(media: &MediaState, id: String) -> Vec<UiEvent> {
     let media = unlock_media!(media);
-    let raw_id = if id.starts_with("show.") { id[5..].to_owned() } else { id.clone() };
+    let raw_id = strip_id_prefix(&id);
     let show_id = TvShowId(raw_id.clone());
 
     let mut events = Vec::new();
@@ -462,7 +499,7 @@ pub fn delete_tv_show(media: &MediaState, id: String) -> Vec<UiEvent> {
 
 pub fn delete_tv_season(media: &MediaState, id: String, season: usize) -> Vec<UiEvent> {
     let media = unlock_media!(media);
-    let raw_id = if id.starts_with("show.") { id[5..].to_owned() } else { id.clone() };
+    let raw_id = strip_id_prefix(&id);
     let show_id = TvShowId(raw_id);
 
     let mut events = Vec::new();
@@ -582,6 +619,7 @@ pub fn undelete_title(media: &MediaState, id: FileBackedTitleId) -> Vec<UiEvent>
 }
 
 pub fn unidentify_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent> {
+    let id = TvEpisodeId(strip_id_prefix(&id.0));
     let media = unlock_media!(media);
     let mut events = Vec::new();
 
@@ -687,7 +725,7 @@ fn split_shell_command(cmd: &str) -> Vec<String> {
     args
 }
 
-fn handle_ffmpeg_progress(stderr: std::process::ChildStderr, on_progress: impl Fn(UiEvent)) {
+fn handle_ffmpeg_progress(stderr: std::process::ChildStderr, on_progress: &impl Fn(UiEvent)) {
     let mut reader = BufReader::new(stderr);
     let mut current_line = Vec::new();
     let mut buffer = [0u8; 1024];
@@ -702,6 +740,11 @@ fn handle_ffmpeg_progress(stderr: std::process::ChildStderr, on_progress: impl F
                             let line = String::from_utf8_lossy(&current_line).trim().to_string();
                             if (line.contains("frame=") || line.contains("size=")) && line.contains("time=") {
                                 on_progress(UiEvent::FfmpegOutput(line));
+                            } else if !line.starts_with("ffmpeg version") && !line.starts_with("built with") && !line.starts_with("configuration:") && !line.starts_with("lib") {
+                                // If it's not version spam, send it. It might be an error or useful info.
+                                if !line.is_empty() {
+                                    on_progress(UiEvent::FfmpegOutput(line));
+                                }
                             }
                             current_line.clear();
                         }
@@ -718,11 +761,51 @@ fn handle_ffmpeg_progress(stderr: std::process::ChildStderr, on_progress: impl F
         let line = String::from_utf8_lossy(&current_line).trim().to_string();
         if (line.contains("frame=") || line.contains("size=")) && line.contains("time=") {
             on_progress(UiEvent::FfmpegOutput(line));
+        } else if !line.starts_with("ffmpeg version") && !line.starts_with("built with") && !line.starts_with("configuration:") && !line.starts_with("lib") {
+            if !line.is_empty() {
+                on_progress(UiEvent::FfmpegOutput(line));
+            }
+        }
+    }
+}
+
+fn handle_rsync_progress(stdout: std::process::ChildStdout, on_progress: &impl Fn(UiEvent)) {
+    let mut reader = BufReader::new(stdout);
+    let mut current_line = Vec::new();
+    let mut buffer = [0u8; 1024];
+
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                for &b in &buffer[..n] {
+                    if b == b'\r' || b == b'\n' {
+                        if !current_line.is_empty() {
+                            let line = String::from_utf8_lossy(&current_line).trim().to_string();
+                            if !line.is_empty() {
+                                on_progress(UiEvent::RsyncOutput(line));
+                            }
+                            current_line.clear();
+                        }
+                    } else {
+                        current_line.push(b);
+                    }
+                }
+            }
+            Err(_) => break,
+        }
+    }
+
+    if !current_line.is_empty() {
+        let line = String::from_utf8_lossy(&current_line).trim().to_string();
+        if !line.is_empty() {
+            on_progress(UiEvent::RsyncOutput(line));
         }
     }
 }
 
 pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId, command_str: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let id = TvEpisodeId(strip_id_prefix(&id.0));
     let (current_path, originals_path) = {
         let media = unlock_media!(media);
 
@@ -757,6 +840,12 @@ pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId, command_str: Str
             originals_path = originals_path.join(part);
         }
 
+        if originals_path.exists() {
+            println!("File already encoded (original exists): {:?}", originals_path);
+            on_progress(UiEvent::FfmpegOutput(format!("Error: File already encoded (original exists)")));
+            return vec![];
+        }
+
         // 3. Move file to originals
         if let Some(parent) = originals_path.parent() {
             if let Err(e) = fs::create_dir_all(parent) {
@@ -789,37 +878,55 @@ pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId, command_str: Str
     }
 
     // Ensure -stats is present for progress reporting if it's ffmpeg
-    if args[0].contains("ffmpeg") && !args.iter().any(|a| a == "-stats") {
-        cmd.arg("-stats");
+    if args[0].contains("ffmpeg") {
+        if !args.iter().any(|a| a == "-stats") {
+            cmd.arg("-stats");
+        }
+        if !args.iter().any(|a| a == "-y") {
+            cmd.arg("-y");
+        }
     }
 
-    let mut child = cmd.stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to execute command");
+    let child_res = cmd.stderr(Stdio::piped()).spawn();
 
-    if let Some(stderr) = child.stderr.take() {
-        handle_ffmpeg_progress(stderr, on_progress);
-    }
+    match child_res {
+        Ok(mut child) => {
+            if let Some(stderr) = child.stderr.take() {
+                handle_ffmpeg_progress(stderr, &on_progress);
+            }
 
-    let status = child.wait();
+            let status = child.wait();
 
-    match status {
-        Ok(s) if s.success() => {
-            println!("ffmpeg successful for {:?}", current_path);
-            // 5. Update state (file size)
-            if let Ok(metadata) = fs::metadata(&current_path) {
-                let media = unlock_media!(media);
-                let mut titles = media.file_backed_titles.borrow_mut();
-                if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
-                    title.file_size = metadata.len();
+            match status {
+                Ok(s) if s.success() => {
+                    println!("ffmpeg successful for {:?}", current_path);
+                    // 5. Update state (file size)
+                    if let Ok(metadata) = fs::metadata(&current_path) {
+                        let media = unlock_media!(media);
+                        let mut titles = media.file_backed_titles.borrow_mut();
+                        if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
+                            title.file_size = metadata.len();
+                        }
+                    }
+                }
+                Ok(s) => {
+                    println!("ffmpeg failed with status: {:?}", s);
+                    on_progress(UiEvent::FfmpegOutput(format!("Error: ffmpeg exited with status {:?}", s)));
+                    // Restore original
+                    let _ = fs::rename(&originals_path, &current_path);
+                }
+                Err(e) => {
+                    println!("failed to execute ffmpeg: {:?}", e);
+                    on_progress(UiEvent::FfmpegOutput(format!("Error: failed to wait for ffmpeg: {:?}", e)));
+                    // Restore original
+                    let _ = fs::rename(&originals_path, &current_path);
                 }
             }
         }
-        Ok(s) => {
-            println!("ffmpeg failed with status: {:?}", s);
-        }
         Err(e) => {
-            println!("failed to execute ffmpeg: {:?}", e);
+            println!("failed to execute ffmpeg spawn: {:?}", e);
+            // Restore the file to original location if spawn failed
+            let _ = fs::rename(&originals_path, &current_path);
         }
     }
 
@@ -830,6 +937,7 @@ pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId, command_str: Str
 }
 
 pub fn unidentify_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent> {
+    let id = FilmVideoId(strip_id_prefix(&id.0));
     let media = unlock_media!(media);
     let mut events = Vec::new();
 
@@ -902,6 +1010,7 @@ pub fn unidentify_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent
 }
 
 pub fn reencode_film_video(media: &MediaState, id: FilmVideoId, command_str: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let id = FilmVideoId(strip_id_prefix(&id.0));
     let (current_path, originals_path) = {
         let media = unlock_media!(media);
 
@@ -930,6 +1039,12 @@ pub fn reencode_film_video(media: &MediaState, id: FilmVideoId, command_str: Str
         let mut originals_path = media.media_dir.join("originals");
         for part in &current_rel_path {
             originals_path = originals_path.join(part);
+        }
+
+        if originals_path.exists() {
+            println!("File already encoded (original exists): {:?}", originals_path);
+            on_progress(UiEvent::FfmpegOutput(format!("Error: File already encoded (original exists)")));
+            return vec![];
         }
 
         // 3. Move file to originals
@@ -964,36 +1079,48 @@ pub fn reencode_film_video(media: &MediaState, id: FilmVideoId, command_str: Str
     }
 
     // Ensure -stats is present for progress reporting if it's ffmpeg
-    if args[0].contains("ffmpeg") && !args.iter().any(|a| a == "-stats") {
-        cmd.arg("-stats");
+    if args[0].contains("ffmpeg") {
+        if !args.iter().any(|a| a == "-stats") {
+            cmd.arg("-stats");
+        }
+        if !args.iter().any(|a| a == "-y") {
+            cmd.arg("-y");
+        }
     }
 
-    let mut child = cmd.stderr(Stdio::piped())
-        .spawn()
-        .expect("failed to execute command");
+    let child_res = cmd.stderr(Stdio::piped()).spawn();
 
-    if let Some(stderr) = child.stderr.take() {
-        handle_ffmpeg_progress(stderr, on_progress);
-    }
+    match child_res {
+        Ok(mut child) => {
+            if let Some(stderr) = child.stderr.take() {
+                handle_ffmpeg_progress(stderr, &on_progress);
+            }
 
-    let status = child.wait();
+            let status = child.wait();
 
-    match status {
-        Ok(s) if s.success() => {
-            println!("ffmpeg successful for {:?}", current_path);
-            if let Ok(metadata) = fs::metadata(&current_path) {
-                let media = unlock_media!(media);
-                let mut titles = media.file_backed_titles.borrow_mut();
-                if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
-                    title.file_size = metadata.len();
+            match status {
+                Ok(s) if s.success() => {
+                    println!("ffmpeg successful for {:?}", current_path);
+                    if let Ok(metadata) = fs::metadata(&current_path) {
+                        let media = unlock_media!(media);
+                        let mut titles = media.file_backed_titles.borrow_mut();
+                        if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
+                            title.file_size = metadata.len();
+                        }
+                    }
+                }
+                Ok(s) => {
+                    println!("ffmpeg failed with status: {:?}", s);
+                }
+                Err(e) => {
+                    println!("failed to execute ffmpeg: {:?}", e);
                 }
             }
         }
-        Ok(s) => {
-            println!("ffmpeg failed with status: {:?}", s);
-        }
         Err(e) => {
-            println!("failed to execute ffmpeg: {:?}", e);
+            println!("failed to execute ffmpeg spawn: {:?}", e);
+            // Restore the file to original location if spawn failed
+            let _ = fs::rename(&originals_path, &current_path);
         }
     }
 
@@ -1021,19 +1148,27 @@ fn get_hash_from_url(url: &str) -> Option<Vec<u8>> {
 }
 
 
-fn get_hash_stats(h: &[u8]) -> (f64, f64) {
-    if h.len() == 0 { return (0.0, 0.0); }
+#[derive(Clone, Copy)]
+struct HashStats {
+    mean: f64,
+    std_dev: f64,
+}
+
+fn get_hash_stats(h: &[u8]) -> HashStats {
+    if h.is_empty() { return HashStats { mean: 0.0, std_dev: 0.0 }; }
     let m = h.iter().map(|&x| x as i32).sum::<i32>() as f64 / h.len() as f64;
     let v = h.iter().map(|&x| (x as f64 - m).powi(2)).sum::<f64>() / h.len() as f64;
-    (m, v.sqrt())
+    HashStats { mean: m, std_dev: v.sqrt() }
 }
 
 
-fn compare_hashes(h1: &[u8], h2: &[u8]) -> u32 {
+fn compare_hashes(h1: &[u8], stats1: HashStats, h2: &[u8], stats2: HashStats) -> u32 {
     if h1.len() != 3072 || h2.len() != 3072 { return u32::MAX; }
 
-    let (m1, s1) = get_hash_stats(h1);
-    let (m2, s2) = get_hash_stats(h2);
+    let m1 = stats1.mean;
+    let s1 = stats1.std_dev;
+    let m2 = stats2.mean;
+    let s2 = stats2.std_dev;
 
     if s1 < 0.1 || s2 < 0.1 {
         if s1 < 0.1 && s2 < 0.1 { return 0; }
@@ -1091,14 +1226,53 @@ fn get_image_aspect_ratio(path_or_url: &str) -> f64 {
     1.77777777
 }
 
-pub fn match_scan(media: &MediaState, id: FileBackedTitleId, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
-    // --- DEBUG CONFIGURATION ---
-    // Show name (lowercase partial match), Season, Episode
-    let debug_target = ("simpsons", 7, 1);
-    // Extra frame index ranges to include in the dump regardless of score
-    let debug_extra_ranges = vec![(12100, 12300)]; // Around 1220294ms (idx 12202)
-    // ---------------------------
+struct VideoInfo {
+    width: u64,
+    height: u64,
+    codec_name: String,
+    dar: f64,
+    start_time_ms: u64,
+}
 
+fn probe_video(path: &std::path::Path) -> Option<VideoInfo> {
+    let output = std::process::Command::new("ffprobe")
+        .arg("-v").arg("error")
+        .arg("-select_streams").arg("v:0")
+        .arg("-show_entries").arg("stream=width,height,codec_name,display_aspect_ratio,start_time")
+        .arg("-of").arg("json")
+        .arg(path)
+        .output();
+
+    if let Ok(output) = output {
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) {
+            if let Some(stream) = json["streams"].as_array().and_then(|a| a.get(0)) {
+                let width = stream["width"].as_u64().unwrap_or(0);
+                let height = stream["height"].as_u64().unwrap_or(0);
+                let codec_name = stream["codec_name"].as_str().unwrap_or("unknown").to_string();
+                let dar_str = stream["display_aspect_ratio"].as_str().unwrap_or("");
+                let dar = parse_dar(dar_str).unwrap_or_else(|| {
+                    if height > 0 { width as f64 / height as f64 } else { 1.77777777 }
+                });
+                let start_time_secs = stream["start_time"].as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| stream["start_time"].as_f64())
+                    .unwrap_or(0.0);
+                let start_time_ms = (start_time_secs * 1000.0) as u64;
+
+                return Some(VideoInfo {
+                    width,
+                    height,
+                    codec_name,
+                    dar,
+                    start_time_ms,
+                });
+            }
+        }
+    }
+    None
+}
+
+pub fn match_scan(media: &MediaState, id: FileBackedTitleId, command_str: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
     let path = {
         let media = unlock_media!(media);
         let titles = media.file_backed_titles.borrow();
@@ -1119,29 +1293,14 @@ pub fn match_scan(media: &MediaState, id: FileBackedTitleId, on_progress: impl F
     }
 
     on_progress(UiEvent::FfmpegOutput("Match Scan: Probing video...".to_owned()));
-    let video_dar = get_image_aspect_ratio(&path.to_string_lossy());
-    on_progress(UiEvent::FfmpegOutput(format!("Match Scan: Video aspect ratio: {:.2}", video_dar)));
-
-    let start_time_ms = {
-        let output = std::process::Command::new("ffprobe")
-            .arg("-v").arg("error")
-            .arg("-select_streams").arg("v:0")
-            .arg("-show_entries").arg("stream=start_time")
-            .arg("-of").arg("default=noprint_wrappers=1:nokey=1")
-            .arg(&path)
-            .output();
-
-        if let Ok(output) = output {
-            let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if let Ok(start_time_secs) = s.parse::<f64>() {
-                (start_time_secs * 1000.0) as u64
-            } else {
-                0
-            }
-        } else {
-            0
-        }
+    let video_info = probe_video(&path);
+    let (video_dar, start_time_ms) = if let Some(ref info) = video_info {
+        (info.dar, info.start_time_ms)
+    } else {
+        let dar = get_image_aspect_ratio(&path.to_string_lossy());
+        (dar, 0)
     };
+    on_progress(UiEvent::FfmpegOutput(format!("Match Scan: Video aspect ratio: {:.2}", video_dar)));
 
     on_progress(UiEvent::FfmpegOutput("Match Scan: Probing stills...".to_owned()));
     let target_ar = if let Some(ep) = episodes_with_stills.iter().find(|e| e.still_path.is_some()) {
@@ -1154,8 +1313,35 @@ pub fn match_scan(media: &MediaState, id: FileBackedTitleId, on_progress: impl F
 
     on_progress(UiEvent::FfmpegOutput("Match Scan: Extracting frames (10fps)...".to_owned()));
     let mut sample_hashes = Vec::new();
-    let vf = format!("setpts=PTS-STARTPTS,fps=10,crop=w=min(iw\\,ih*{0:.4}):h=min(ih\\,iw/{0:.4}),scale=32:32:force_original_aspect_ratio=increase,crop=32:32,format=rgb24", target_ar);
-    let child = std::process::Command::new("ffmpeg")
+
+    let mut cmd = std::process::Command::new("ffmpeg");
+    let vf;
+    if command_str.contains("nvenc") {
+        let cuvid_decoder = video_info.as_ref().and_then(|info| {
+            match info.codec_name.as_str() {
+                "h264" => Some("h264_cuvid"),
+                "hevc" => Some("hevc_cuvid"),
+                "mpeg2video" => Some("mpeg2_cuvid"),
+                "mpeg4" => Some("mpeg4_cuvid"),
+                "vc1" => Some("vc1_cuvid"),
+                "vp8" => Some("vp8_cuvid"),
+                "vp9" => Some("vp9_cuvid"),
+                _ => None,
+            }
+        });
+
+        cmd.arg("-hwaccel").arg("cuda");
+        if let Some(decoder) = cuvid_decoder {
+            cmd.arg("-c:v").arg(decoder);
+        }
+        cmd.arg("-hwaccel_output_format").arg("cuda");
+        vf = format!("setpts=PTS-STARTPTS,scale_cuda=32:32:force_original_aspect_ratio=increase,hwdownload,format=nv12,fps=10,crop=32:32,format=rgb24");
+    } else {
+        cmd.arg("-hwaccel").arg("auto");
+        vf = format!("setpts=PTS-STARTPTS,fps=10,scale=32:32:force_original_aspect_ratio=increase,crop=32:32,format=rgb24");
+    }
+
+    let child_proc = cmd
         .arg("-ss").arg("0")
         .arg("-i").arg(&path)
         .arg("-map").arg("0:v:0")
@@ -1163,24 +1349,47 @@ pub fn match_scan(media: &MediaState, id: FileBackedTitleId, on_progress: impl F
         .arg("-f").arg("rawvideo")
         .arg("-")
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn().ok();
+        .stderr(Stdio::piped())
+        .spawn();
 
-    if let Some(mut child) = child {
-        let mut stdout = child.stdout.take().unwrap();
-        let mut buffer = [0u8; 3072];
-        while stdout.read_exact(&mut buffer).is_ok() {
-            sample_hashes.push(buffer.to_vec());
-            if sample_hashes.len() % 500 == 0 {
-                on_progress(UiEvent::FfmpegOutput(format!("Match Scan: Extracted {} frames ({:.2}s)...", sample_hashes.len(), (sample_hashes.len() as f64) * 0.1)));
+    match child_proc {
+        Ok(mut child) => {
+            let mut stdout = child.stdout.take().unwrap();
+            let stderr = child.stderr.take().unwrap();
+
+            let stderr_handle = thread::spawn(move || {
+                let mut s = String::new();
+                let mut reader = BufReader::new(stderr);
+                let _ = reader.read_to_string(&mut s);
+                s
+            });
+
+            let mut buffer = [0u8; 3072];
+            while stdout.read_exact(&mut buffer).is_ok() {
+                sample_hashes.push(buffer.to_vec());
+                if sample_hashes.len() % 500 == 0 {
+                    on_progress(UiEvent::FfmpegOutput(format!("Match Scan: Extracted {} frames ({:.2}s)...", sample_hashes.len(), (sample_hashes.len() as f64) * 0.1)));
+                }
+            }
+            let _ = child.wait();
+            let stderr_output = stderr_handle.join().unwrap_or_default();
+
+            if sample_hashes.is_empty() {
+                on_progress(UiEvent::FfmpegOutput("Match Scan: Failed to extract frames".to_owned()));
+                if !stderr_output.is_empty() {
+                    for line in stderr_output.lines() {
+                        if !line.trim().is_empty() {
+                            on_progress(UiEvent::FfmpegOutput(format!("ffmpeg: {}", line)));
+                        }
+                    }
+                }
+                return vec![];
             }
         }
-        let _ = child.wait();
-    }
-
-    if sample_hashes.is_empty() {
-        on_progress(UiEvent::FfmpegOutput("Match Scan: Failed to extract frames".to_owned()));
-        return vec![];
+        Err(e) => {
+            on_progress(UiEvent::FfmpegOutput(format!("Match Scan: Failed to spawn ffmpeg: {}", e)));
+            return vec![];
+        }
     }
 
     let mut best_match = None;
@@ -1190,6 +1399,11 @@ pub fn match_scan(media: &MediaState, id: FileBackedTitleId, on_progress: impl F
 
     let total_episodes = episodes_with_stills.len();
     on_progress(UiEvent::FfmpegOutput(format!("Match Scan: Comparing against {} episodes...", total_episodes)));
+
+    on_progress(UiEvent::FfmpegOutput("Match Scan: Pre-calculating video frame statistics...".to_owned()));
+    let sample_stats: Vec<_> = sample_hashes.par_iter().map(|h| get_hash_stats(h)).collect();
+
+    let mut episode_targets = Vec::new();
     for (idx, ep) in episodes_with_stills.into_iter().enumerate() {
         let cached_hash = {
             let hash_lock = ep.still_hash.lock().unwrap();
@@ -1228,229 +1442,36 @@ pub fn match_scan(media: &MediaState, id: FileBackedTitleId, on_progress: impl F
         };
 
         if let Some(target_hash) = target_hash {
-            let mut ep_min_diff = u32::MAX;
-            let mut ep_best_sample_index = 0;
-            let is_target = false; // ep.season_number == debug_target.1 && ep.number == debug_target.2 && ep.show_name.to_lowercase().contains(debug_target.0);
-            let mut debug_scores = Vec::new();
+            let stats = get_hash_stats(&target_hash);
+            episode_targets.push((ep, target_hash, stats));
+        }
+    }
 
-            for (s_idx, sample_hash) in sample_hashes.iter().enumerate() {
-                let diff = compare_hashes(&target_hash, sample_hash);
-                if is_target {
-                    debug_scores.push((s_idx, start_time_ms + (s_idx as u64) * 100, diff));
-                }
-                if diff < ep_min_diff {
-                    ep_min_diff = diff;
-                    ep_best_sample_index = s_idx;
-                }
+    on_progress(UiEvent::FfmpegOutput("Match Scan: Comparing in parallel...".to_owned()));
+    let results: Vec<_> = episode_targets.into_par_iter().map(|(ep, target_hash, target_stats)| {
+        let mut ep_min_diff = u32::MAX;
+        let mut ep_best_sample_index = 0;
+
+        for (s_idx, (sample_hash, sample_stats)) in sample_hashes.iter().zip(sample_stats.iter()).enumerate() {
+            let diff = compare_hashes(&target_hash, target_stats, sample_hash, *sample_stats);
+            if diff < ep_min_diff {
+                ep_min_diff = diff;
+                ep_best_sample_index = s_idx;
             }
+        }
+        (ep, ep_min_diff, ep_best_sample_index)
+    }).collect();
 
-            if is_target {
-                let _ = std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg("rm -f debug_frame_*.jpg debug_still.jpg")
-                    .output();
+    for (ep, ep_min_diff, ep_best_sample_index) in results {
+        all_results.insert(ep.id.0.clone(), MatchResult {
+            diff: ep_min_diff,
+            position_ms: start_time_ms + (ep_best_sample_index as u64) * 100,
+        });
 
-                let target_path = "debug_still.jpg";
-                let still_url = format!("https://image.tmdb.org/t/p/original{}", ep.still_path.as_ref().unwrap());
-                let _ = std::process::Command::new("ffmpeg")
-                    .arg("-y")
-                    .arg("-i").arg(&still_url)
-                    .arg(target_path)
-                    .output();
-
-                let (t_m, t_s) = get_hash_stats(&target_hash);
-
-                let mut debug_indices = std::collections::BTreeSet::new();
-                // 1. Around best match
-                let window_size = 60;
-                for i in ep_best_sample_index.saturating_sub(window_size)..=(ep_best_sample_index + window_size).min(sample_hashes.len() - 1) {
-                    debug_indices.insert(i);
-                }
-                // 2. Extra ranges
-                for (s, e) in &debug_extra_ranges {
-                    for i in *s..=(*e).min(sample_hashes.len() - 1) {
-                        debug_indices.insert(i);
-                    }
-                }
-
-                let sorted_indices: Vec<_> = debug_indices.iter().cloned().collect();
-                let count = sorted_indices.len();
-
-                // Group into ranges for ffmpeg select filter
-                let mut ranges = Vec::new();
-                if let Some(&first) = sorted_indices.first() {
-                    let mut start = first;
-                    let mut last = first;
-                    for &idx in sorted_indices.iter().skip(1) {
-                        if idx == last + 1 {
-                            last = idx;
-                        } else {
-                            ranges.push((start, last));
-                            start = idx;
-                            last = idx;
-                        }
-                    }
-                    ranges.push((start, last));
-                }
-
-                let select_str = ranges.iter()
-                    .map(|(s, e)| format!("between(n,{},{})", s, e))
-                    .collect::<Vec<_>>()
-                    .join("+");
-
-                on_progress(UiEvent::FfmpegOutput(format!("Match Scan: Extracting {} debug frames...", count)));
-                let debug_vf = format!("setpts=PTS-STARTPTS,fps=10,select='{select_str}',crop=w=min(iw\\,ih*{target_ar:.4}):h=min(ih\\,iw/{target_ar:.4})");
-                let _ = std::process::Command::new("ffmpeg")
-                    .arg("-y")
-                    .arg("-i").arg(&path)
-                    .arg("-vf").arg(&debug_vf)
-                    .arg("-vsync").arg("0")
-                    .arg("debug_frame_%04d.jpg")
-                    .output();
-
-                let mut frame_filename_map = std::collections::HashMap::new();
-                for (i, &idx) in sorted_indices.iter().enumerate() {
-                    frame_filename_map.insert(idx, i + 1);
-                }
-
-                let mut html = format!(r#"
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Match Scan Debug - {} S{:02}E{:02}</title>
-    <style>
-        body {{ font-family: sans-serif; margin: 20px; background: #eee; }}
-        .still-frame {{
-            position: fixed;
-            top: 10px;
-            right: 10px;
-            width: 400px;
-            border: 5px solid red;
-            z-index: 1000;
-            background: white;
-            box-shadow: 0 0 20px rgba(0,0,0,0.5);
-        }}
-        .target-stats {{
-            position: fixed;
-            top: 310px;
-            right: 10px;
-            width: 390px;
-            z-index: 1001;
-            background: rgba(255,255,255,0.9);
-            padding: 10px;
-            border: 1px solid #ccc;
-        }}
-        table {{ border-collapse: collapse; width: calc(100% - 430px); background: white; }}
-        th, td {{ border: 1px solid #ccc; padding: 8px; text-align: left; }}
-        th {{ position: sticky; top: 0; background: #ddd; }}
-        tr:nth-child(even) {{ background-color: #f9f9f9; }}
-        .best {{ background-color: #dfd !important; font-weight: bold; outline: 3px solid green; }}
-        h1 {{ color: #333; }}
-        .frame-img {{ width: 200px; }}
-        .hash-canvas {{ width: 128px; height: 128px; image-rendering: pixelated; border: 1px solid #000; }}
-    </style>
-</head>
-<body>
-    <h1>Match Scan Debug - {} S{:02}E{:02}</h1>
-    <p><b>Video Path:</b> {}</p>
-    <p><b>Video DAR:</b> {:.2}</p>
-    <p><b>Target AR:</b> {:.2}</p>
-    <p><b>Start Time Offset:</b> {}ms</p>
-    <p><b>Best Match:</b> Index {} at {}ms with diff {}</p>
-
-    <div class="still-frame">
-        <img src="debug_still.jpg" style="width: 100%" alt="Still Frame">
-        <canvas id="targetHash" class="hash-canvas" style="width: 100%; height: auto"></canvas>
-    </div>
-    <div class="target-stats">
-        <b>Target Stats:</b> Mean={:.2}, StdDev={:.2}
-    </div>
-
-    <table>
-        <thead>
-            <tr>
-                <th>Index</th>
-                <th>Time</th>
-                <th>Score</th>
-                <th>Frame</th>
-                <th>Hash (32x32)</th>
-                <th>Stats</th>
-            </tr>
-        </thead>
-        <tbody>
-"#, ep.show_name, ep.season_number, ep.number, ep.show_name, ep.season_number, ep.number, path.display(), video_dar, target_ar, start_time_ms, ep_best_sample_index, start_time_ms + (ep_best_sample_index as u64) * 100, ep_min_diff, t_m, t_s);
-
-                for (idx, ts, score) in debug_scores {
-                    let Some(&frame_num) = frame_filename_map.get(&idx) else { continue; };
-
-                    let (m, s) = get_hash_stats(&sample_hashes[idx]);
-                    let class = if idx == ep_best_sample_index { " class=\"best\"" } else { "" };
-                    let frame_file = format!("debug_frame_{:04}.jpg", frame_num);
-                    let hash_json = serde_json::to_string(&sample_hashes[idx]).unwrap();
-
-                    html.push_str(&format!(
-                        r#"            <tr{}>
-                <td>{}</td>
-                <td>{}ms</td>
-                <td>{}</td>
-                <td><img src="{}" class="frame-img"></td>
-                <td><canvas class="hash-canvas" data-hash='{}'></canvas></td>
-                <td>Mean: {:.2}<br>StdDev: {:.2}</td>
-            </tr>
-"#,
-                        class, idx, ts, score, frame_file, hash_json, m, s
-                    ));
-                }
-
-                let target_hash_json = serde_json::to_string(&target_hash).unwrap();
-                html.push_str(&format!(r#"
-        </tbody>
-    </table>
-
-    <script>
-        function drawHash(canvas, hash) {{
-            const ctx = canvas.getContext('2d');
-            canvas.width = 32;
-            canvas.height = 32;
-            const imgData = ctx.createImageData(32, 32);
-            for (let i = 0; i < 1024; i++) {{
-                imgData.data[i * 4] = hash[i * 3];
-                imgData.data[i * 4 + 1] = hash[i * 3 + 1];
-                imgData.data[i * 4 + 2] = hash[i * 3 + 2];
-                imgData.data[i * 4 + 3] = 255;
-            }}
-            ctx.putImageData(imgData, 0, 0);
-        }}
-
-        // Draw target hash
-        drawHash(document.getElementById('targetHash'), {});
-
-        // Draw all frame hashes
-        document.querySelectorAll('canvas[data-hash]').forEach(canvas => {{
-            const hash = JSON.parse(canvas.getAttribute('data-hash'));
-            drawHash(canvas, hash);
-        }});
-    </script>
-</body>
-</html>
-"#, target_hash_json));
-
-                if let Ok(mut file) = std::fs::File::create("debug_match.html") {
-                    let _ = file.write_all(html.as_bytes());
-                }
-                on_progress(UiEvent::FfmpegOutput("Match Scan: Generated debug_match.html".to_owned()));
-            }
-
-            all_results.insert(ep.id.0.clone(), MatchResult {
-                diff: ep_min_diff,
-                position_ms: start_time_ms + (ep_best_sample_index as u64) * 100,
-            });
-
-            if ep_min_diff < min_diff {
-                min_diff = ep_min_diff;
-                best_match = Some(ep.id.clone());
-                best_sample_index = ep_best_sample_index;
-            }
+        if ep_min_diff < min_diff {
+            min_diff = ep_min_diff;
+            best_match = Some(ep.id.clone());
+            best_sample_index = ep_best_sample_index;
         }
     }
 
@@ -1521,7 +1542,7 @@ pub fn fetch_tmdb_still(media: &MediaState, id: MappableMediaId) -> Vec<UiEvent>
 
 pub fn delete_film(media: &MediaState, id: String) -> Vec<UiEvent> {
     let media = unlock_media!(media);
-    let raw_id = if id.starts_with("film.") { id[5..].to_owned() } else { id.clone() };
+    let raw_id = strip_id_prefix(&id);
     let film_id = FilmId(raw_id.clone());
 
     let mut events = Vec::new();
@@ -1563,7 +1584,8 @@ pub fn delete_film(media: &MediaState, id: String) -> Vec<UiEvent> {
 
 pub fn delete_film_video(media: &MediaState, id: String) -> Vec<UiEvent> {
     let media = unlock_media!(media);
-    let video_id = FilmVideoId(id.clone());
+    let raw_id = strip_id_prefix(&id);
+    let video_id = FilmVideoId(raw_id.clone());
 
     let mut events = Vec::new();
 
@@ -1583,7 +1605,7 @@ pub fn delete_film_video(media: &MediaState, id: String) -> Vec<UiEvent> {
     // 2. Remove from tree
     events.push(UiEvent::RemoveTreeItemById {
         tree: Tree::Films,
-        id,
+        id: raw_id,
     });
 
     media.delete_film_video(&video_id);

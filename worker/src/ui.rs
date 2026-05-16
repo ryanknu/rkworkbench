@@ -56,6 +56,7 @@ pub enum UiEvent {
     CommandStarted(IncomingRequest),
     CommandCompleted(IncomingRequest),
     FfmpegOutput(String),
+    RsyncOutput(String),
     SelectTreeItem {
         tree: Tree,
         id: String,

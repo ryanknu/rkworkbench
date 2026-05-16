@@ -51,16 +51,21 @@ private:
 	int _mRequestedPlayerPosition = 0;
 	int ffmpegQueueCount = 0;
 	int ffmpegActiveCount = 0;
+	int rsyncQueueCount = 0;
+	int rsyncActiveCount = 0;
 	QTimer *spinnerTimer = nullptr;
 	int spinnerIndex = 0;
 	std::string currentEncodingFile;
+	std::string currentRsyncFile;
 	std::string lastFfmpegOutput;
+	std::string lastRsyncOutput;
 
 	void _reflowDisksTree() const;
 	void _reflowShowsTree() const;
 	void _reflowGcButton() const;
 	void _reflowTaskList();
 	void _updateFfmpegStatus();
+	void _updateRsyncStatus();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _queueTask(std::string cmd);
 	void _queueTasks(std::vector<std::string> cmds);
@@ -94,7 +99,7 @@ extern "C" {
 	void confirm_film_video_plays(const char* id);
 	void unidentify_tv_episode(const char* id);
 	void unidentify_film_video(const char* id);
-	void match_scan(const char* id);
+ void match_scan(const char* id, const char* command);
 	void fetch_tmdb_still(const char* id, bool is_tv);
 	void reencode_tv_episode(const char* id, const char* command);
 	void reencode_film_video(const char* id, const char* command);

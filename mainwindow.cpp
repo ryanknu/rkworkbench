@@ -428,10 +428,22 @@ MainWindow::MainWindow(QWidget *parent)
 {
     ui->setupUi(this);
     ui->ffmpegStatusWidget->setMinimumHeight(30);
-    ui->preprocessorCommand->setText("ffmpeg -i ${in} -c:v libx265 -crf 18 -preset slow -pix_fmt yuv420p10le -c:a copy ${out}");
+    ui->rsyncStatusWidget->setMinimumHeight(30);
+    ui->preprocessorCommand->setText("ffmpeg -hwaccel cuda -i ${in} -map 0 -c:v hevc_nvenc -preset p7 -rc vbr -cq 18 -pix_fmt p010le -c:a copy -c:s copy -c:d copy ${out}");
+    connect(ui->preprocessorTemplates, &QComboBox::currentIndexChanged, this, [this](int index) {
+        if (index == 0) {
+            ui->preprocessorCommand->setText("ffmpeg -i ${in} -map 0 -c:v libx265 -crf 18 -preset slow -pix_fmt yuv420p10le -c:a copy -c:s copy -c:d copy ${out}");
+        } else if (index == 1) {
+            ui->preprocessorCommand->setText("ffmpeg -hwaccel cuda -i ${in} -map 0 -c:v hevc_nvenc -preset p7 -rc vbr -cq 18 -pix_fmt p010le -c:a copy -c:s copy -c:d copy ${out}");
+        } else if (index == 2) {
+            ui->preprocessorCommand->setText("ffmpeg -hwaccel cuda -i ${in} -map 0 -c:v av1_nvenc -preset p7 -rc vbr -cq 18 -pix_fmt p010le -c:a copy -c:s copy -c:d copy ${out}");
+        }
+    });
+    ui->preprocessorTemplates->setCurrentIndex(1);
     ui->remoteTvLocation->setText("root@10.4.6.2:/mnt/user/emby/tv");
     ui->remoteMovieLocation->setText("root@10.4.6.2:/mnt/user/emby/movies");
     ui->ffmpegStatusWidget->hide();
+    ui->rsyncStatusWidget->hide();
     setMouseTrackingRecursive(this, true);
 
     ui->filmsTree->hide();
@@ -442,6 +454,7 @@ MainWindow::MainWindow(QWidget *parent)
         const QString frames[] = {"|", "/", "-", "\\"};
         spinnerIndex = (spinnerIndex + 1) % 4;
         ui->spinnerLabel->setText(frames[spinnerIndex]);
+        ui->rsyncSpinnerLabel->setText(frames[spinnerIndex]);
     });
 
     // Spin up background thread
@@ -528,7 +541,8 @@ MainWindow::MainWindow(QWidget *parent)
         if (matchScanAction) {
             connect(matchScanAction, &QAction::triggered, [&]() {
                 auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-                match_scan(titleId.c_str());
+                auto command = ui->preprocessorCommand->text().toStdString();
+                match_scan(titleId.c_str(), command.c_str());
             });
         }
 
@@ -599,21 +613,18 @@ MainWindow::MainWindow(QWidget *parent)
                 delete_tv_show(showId.c_str());
             });
 
-            connect(deleteSeason, &QAction::triggered, [this, episodeId]() {
-                std::string appModelId = episodeId;
-                if (!appModelId.starts_with("ep.")) appModelId = "ep." + appModelId;
-                if (!appModel->hasEpisode(appModelId)) return;
-                auto episode = appModel->episodeById(appModelId);
-
-                delete_tv_season(episode.showId.c_str(), episode.season);
+            connect(deleteSeason, &QAction::triggered, [this, showId, episodeText]() {
+                int season = 0;
+                if (episodeText.startsWith("S") && episodeText.length() >= 3 && isdigit(episodeText[1].toLatin1()) && isdigit(episodeText[2].toLatin1())) {
+                    season = episodeText.mid(1, 2).toInt();
+                }
+                if (season > 0) {
+                    delete_tv_season(showId.c_str(), season);
+                }
             });
 
-            connect(confirmAction, &QAction::triggered, [this, episodeId]() {
-                std::string appModelId = episodeId;
-                if (!appModelId.starts_with("ep.")) appModelId = "ep." + appModelId;
-                appModel->confirmPlays(appModelId);
+            connect(confirmAction, &QAction::triggered, [episodeId]() {
                 confirm_tv_episode_plays(episodeId.c_str());
-                _reflowGcButton();
             });
 
             connect(unidentifyAction, &QAction::triggered, [episodeId]() {
@@ -632,6 +643,8 @@ MainWindow::MainWindow(QWidget *parent)
             auto tvLoc = ui->remoteTvLocation->text().toStdString();
             auto movieLoc = ui->remoteMovieLocation->text().toStdString();
             rsync_show(showId.c_str(), tvLoc.c_str(), movieLoc.c_str());
+            this->rsyncQueueCount++;
+            this->_updateRsyncStatus();
         });
 
         connect(reencodeShowAction, &QAction::triggered, [this, index]() {
@@ -734,6 +747,8 @@ MainWindow::MainWindow(QWidget *parent)
             auto tvLoc = ui->remoteTvLocation->text().toStdString();
             auto movieLoc = ui->remoteMovieLocation->text().toStdString();
             rsync_show(filmId.c_str(), tvLoc.c_str(), movieLoc.c_str());
+            this->rsyncQueueCount++;
+            this->_updateRsyncStatus();
         });
 
         menu.exec(ui->filmsTree->viewport()->mapToGlobal(pos));
@@ -876,7 +891,7 @@ void MainWindow::mouseMoveEvent(QMouseEvent *event)
 
 void MainWindow::_updateFfmpegStatus() {
     qDebug() << "_updateFfmpegStatus: active=" << ffmpegActiveCount << "queue=" << ffmpegQueueCount << "output=" << q(lastFfmpegOutput);
-    if (ffmpegActiveCount > 0 || ffmpegQueueCount > 0) {
+    if (ffmpegActiveCount > 0 || ffmpegQueueCount > 0 || lastFfmpegOutput.starts_with("Error:")) {
         ui->ffmpegStatusWidget->show();
         if (ffmpegActiveCount > 0) {
             spinnerTimer->start(250);
@@ -888,14 +903,43 @@ void MainWindow::_updateFfmpegStatus() {
                 ? std::format("{}: {} ({} in queue)", prefix, currentEncodingFile, ffmpegQueueCount)
                 : std::format("{}: {} | {} ({} in queue)", prefix, currentEncodingFile, lastFfmpegOutput, ffmpegQueueCount);
             ui->statusLabel->setText(q(status));
-        } else {
-            spinnerTimer->stop();
+        } else if (ffmpegQueueCount > 0) {
+            if (rsyncActiveCount == 0) spinnerTimer->stop();
             ui->spinnerLabel->setText("-");
             ui->statusLabel->setText(q(std::format("Waiting: {} jobs in queue", ffmpegQueueCount)));
+        } else {
+            if (rsyncActiveCount == 0) spinnerTimer->stop();
+            ui->spinnerLabel->setText("!");
+            ui->statusLabel->setText(q(lastFfmpegOutput));
         }
     } else {
         ui->ffmpegStatusWidget->hide();
-        spinnerTimer->stop();
+        if (rsyncActiveCount == 0) spinnerTimer->stop();
+    }
+}
+
+void MainWindow::_updateRsyncStatus() {
+    qDebug() << "_updateRsyncStatus: active=" << rsyncActiveCount << "queue=" << rsyncQueueCount << "output=" << q(lastRsyncOutput);
+    if (rsyncActiveCount > 0 || rsyncQueueCount > 0 || lastRsyncOutput.starts_with("Error:")) {
+        ui->rsyncStatusWidget->show();
+        if (rsyncActiveCount > 0) {
+            spinnerTimer->start(250);
+            auto status = lastRsyncOutput.empty()
+                ? std::format("rsync: {} ({} in queue)", currentRsyncFile, rsyncQueueCount)
+                : std::format("rsync: {} | {} ({} in queue)", currentRsyncFile, lastRsyncOutput, rsyncQueueCount);
+            ui->rsyncStatusLabel->setText(q(status));
+        } else if (rsyncQueueCount > 0) {
+            if (ffmpegActiveCount == 0) spinnerTimer->stop();
+            ui->rsyncSpinnerLabel->setText("-");
+            ui->rsyncStatusLabel->setText(q(std::format("Waiting: {} rsync jobs in queue", rsyncQueueCount)));
+        } else {
+            if (ffmpegActiveCount == 0) spinnerTimer->stop();
+            ui->rsyncSpinnerLabel->setText("!");
+            ui->rsyncStatusLabel->setText(q(lastRsyncOutput));
+        }
+    } else {
+        ui->rsyncStatusWidget->hide();
+        if (ffmpegActiveCount == 0) spinnerTimer->stop();
     }
 }
 
@@ -919,6 +963,7 @@ void MainWindow::processMessage(std::string message) {
 
     try {
         if (m.contains("CommandStarted")) {
+            lastFfmpegOutput = "";
             auto req = m["CommandStarted"];
             if (req.contains("ReencodeRequest")) {
                 std::string id = req["ReencodeRequest"].is_array() ? req["ReencodeRequest"][0].get<std::string>() : req["ReencodeRequest"].get<std::string>();
@@ -931,6 +976,15 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegQueueCount = std::max(0, ffmpegQueueCount - 1);
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
+            }
+            if (req.contains("RsyncRequest")) {
+                lastRsyncOutput = "";
+                auto args = req["RsyncRequest"];
+                std::string id = args[0].get<std::string>();
+                currentRsyncFile = id;
+                rsyncQueueCount = std::max(0, rsyncQueueCount - 1);
+                rsyncActiveCount++;
+                _updateRsyncStatus();
             }
             if (req.contains("ReencodeFilmRequest")) {
                 std::string id = req["ReencodeFilmRequest"].is_array() ? req["ReencodeFilmRequest"][0].get<std::string>() : req["ReencodeFilmRequest"].get<std::string>();
@@ -965,10 +1019,29 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount = std::max(0, ffmpegActiveCount - 1);
                 if (ffmpegActiveCount == 0) {
                     currentEncodingFile = "";
-                    lastFfmpegOutput = "";
+                    if (!lastFfmpegOutput.starts_with("Error:")) {
+                        lastFfmpegOutput = "";
+                    }
                 }
                 _updateFfmpegStatus();
             }
+            if (req.contains("RsyncRequest")) {
+                rsyncActiveCount = std::max(0, rsyncActiveCount - 1);
+                if (rsyncActiveCount == 0) {
+                    currentRsyncFile = "";
+                    if (!lastRsyncOutput.starts_with("Error:")) {
+                        lastRsyncOutput = "";
+                    }
+                }
+                _updateRsyncStatus();
+            }
+        }
+    } catch (...) {}
+
+    try {
+        if (m.contains("RsyncOutput")) {
+            lastRsyncOutput = m["RsyncOutput"].get<std::string>();
+            _updateRsyncStatus();
         }
     } catch (...) {}
 
