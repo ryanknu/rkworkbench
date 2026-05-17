@@ -7,7 +7,10 @@ impl From<TmdbFilm> for Film {
             id: FilmId(value.id.to_string()),
             tmdb_id: value.id,
             name: value.title.clone(),
+            overview: value.overview.clone(),
+            original_language: value.original_language.clone(),
             release_date: value.release_date.clone(),
+            runtime: value.runtime,
             film_key: format!("{} ({}) [tmdb={}]", value.original_title, &value.release_date[0..4], value.id),
             poster_path: value.poster_path,
         }
@@ -21,7 +24,10 @@ impl From<TmdbTvShow> for TvShow {
             id: TvShowId(value.id.to_string()),
             tmdb_id: value.id,
             name: value.name,
+            overview: value.overview,
+            original_language: value.original_language,
             first_air_date: value.first_air_date,
+            runtime: value.episode_run_time.as_ref().and_then(|v| v.first().cloned()),
             poster_path: value.poster_path,
         }
     }
@@ -69,6 +75,9 @@ pub struct TvShowEpisodeBuilder {
     season_number: usize,
     number: usize,
     name: String,
+    overview: String,
+    air_date: Option<String>,
+    runtime: Option<usize>,
     series_key: String,
     still_path: Option<String>,
 }
@@ -81,6 +90,9 @@ impl From<TmdbTvShowEpisode> for TvShowEpisodeBuilder {
             season_number: value.season_number,
             number: value.episode_number,
             name: value.name,
+            overview: value.overview,
+            air_date: value.air_date,
+            runtime: value.runtime,
             series_key: format!("S{:0>2}E{:0>2}", value.season_number, value.episode_number),
             still_path: value.still_path,
         }
@@ -95,6 +107,9 @@ impl TvShowEpisodeBuilder {
             season_number: self.season_number,
             number: self.number,
             name: self.name,
+            overview: self.overview,
+            air_date: self.air_date,
+            runtime: self.runtime,
             show_name: show.name.clone(),
             show_id: show.id.clone(),
             series_key: self.series_key,

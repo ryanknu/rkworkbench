@@ -71,6 +71,8 @@ private:
 	void _queueTask(std::string cmd);
 	void _queueTasks(std::vector<std::string> cmds);
 	void _findVlc();
+	void _clearMetadataPanel();
+	void _loadInPlayer(QString path);
 	QString _vlcProgram;
 	QStringList _vlcArgs;
 	bool _vlcFound = false;
@@ -106,6 +108,7 @@ extern "C" {
 	void unidentify_film_video(const char* id);
  void match_scan(const char* id, const char* command);
 	void fetch_tmdb_still(const char* id, bool is_tv);
+	void fetch_mkv_info(const char* path);
 	void reencode_tv_episode(const char* id, const char* command);
 	void reencode_film_video(const char* id, const char* command);
 	void delete_title(const char* id);

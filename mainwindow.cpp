@@ -372,26 +372,9 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     ui->disksTree->setRootIsDecorated(false);
     ui->disksTree->setItemsExpandable(false);
 
-    // When selecting an entry on the disks tree, load item in player.
-    connect(ui->disksTree->selectionModel(), &QItemSelectionModel::selectionChanged, [&](const QItemSelection &, const QItemSelection &) {
-        auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-        auto fileName = get_filename_for_title_id(titleId.c_str());
-        std::string path(fileName);
-        free_string(fileName);
-
-        // Reset position for new file
+    auto handleTsSeek = [&](QTreeView* tree) {
         _mRequestedPlayerPosition = 0;
         ui->seekPos->setText("0");
-        ui->tmdbStillLabel->clear();
-
-        player->stop();
-        player->setSource(QUrl::fromLocalFile(q(path)));
-        player->setPlaybackRate(1.0);
-        player->play();
-        player->pause();
-    });
-
-    auto handleTsSeek = [&](QTreeView* tree) {
         auto text = tree->currentIndex().data(Qt::DisplayRole).toString().toStdString();
         size_t tsPos = text.find("ts=");
         if (tsPos != std::string::npos) {
@@ -401,26 +384,51 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
             try {
                 uint64_t ts = std::stoull(tsStr);
                 _mRequestedPlayerPosition = ts;
-                player->setPosition(ts);
             } catch (...) {}
         }
     };
 
+    // When selecting an entry on the disks tree, load item in player.
+    connect(ui->disksTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &, const QItemSelection &) {
+        handleTsSeek(ui->disksTree);
+        auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
+        auto fileName = get_filename_for_title_id(titleId.c_str());
+        if (!fileName) return;
+        std::string path(fileName);
+        free_string(fileName);
+
+        _clearMetadataPanel();
+        fetch_mkv_info(path.c_str());
+        ui->metadataTitle->setText(q(path));
+
+        _loadInPlayer(q(path));
+    });
+
     connect(ui->showsTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &, const QItemSelection &) {
         handleTsSeek(ui->showsTree);
         auto id = _getIdForSelectedItemInTree(ui->showsTree);
-        ui->tmdbStillLabel->clear();
+        _clearMetadataPanel();
         if (!id.empty()) {
             fetch_tmdb_still(id.c_str(), true);
+            auto fileName = get_filename_for_tv_episode_id(id.c_str());
+            if (fileName) {
+                fetch_mkv_info(fileName);
+                free_string(fileName);
+            }
         }
     });
 
     connect(ui->filmsTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &, const QItemSelection &) {
         handleTsSeek(ui->filmsTree);
         auto id = _getIdForSelectedItemInTree(ui->filmsTree);
-        ui->tmdbStillLabel->clear();
+        _clearMetadataPanel();
         if (!id.empty()) {
             fetch_tmdb_still(id.c_str(), false);
+            auto fileName = get_filename_for_film_video_id(id.c_str());
+            if (fileName) {
+                fetch_mkv_info(fileName);
+                free_string(fileName);
+            }
         }
     });
 }
@@ -518,27 +526,34 @@ MainWindow::MainWindow(QWidget *parent)
             qDebug() << "index is not valid";
             return;
         }
+        ui->disksTree->setCurrentIndex(index);
 
         QMenu menu;
         auto titleId = index.data(Qt::UserRole).toString().toStdString();
         auto fileName = get_filename_for_title_id(titleId.c_str());
-        if (fileName && _vlcFound) {
+        if (fileName) {
             std::string path(fileName);
             free_string(fileName);
-            QAction * vlcAction = menu.addAction(q("Open in VLC"));
-            connect(vlcAction, &QAction::triggered, [this, path]() {
-                QStringList args = _vlcArgs;
-                args.append(QString::fromStdString(path));
-                if (_vlcProgram == "flatpak") {
-                    args.append("@@");
-                }
-                qDebug() << "Launching VLC:" << _vlcProgram << args;
-                if (!QProcess::startDetached(_vlcProgram, args)) {
-                    qDebug() << "Failed to start VLC process";
-                }
+
+            QAction * loadAction = menu.addAction(q("Load in Player"));
+            connect(loadAction, &QAction::triggered, [this, path]() {
+                _loadInPlayer(QString::fromStdString(path));
             });
-        } else if (fileName) {
-            free_string(fileName);
+
+            if (_vlcFound) {
+                QAction * vlcAction = menu.addAction(q("Open in VLC"));
+                connect(vlcAction, &QAction::triggered, [this, path]() {
+                    QStringList args = _vlcArgs;
+                    args.append(QString::fromStdString(path));
+                    if (_vlcProgram == "flatpak") {
+                        args.append("@@");
+                    }
+                    qDebug() << "Launching VLC:" << _vlcProgram << args;
+                    if (!QProcess::startDetached(_vlcProgram, args)) {
+                        qDebug() << "Failed to start VLC process";
+                    }
+                });
+            }
         }
 
         QAction * deleteAction = menu.addAction(q("Delete Title"));
@@ -583,6 +598,8 @@ MainWindow::MainWindow(QWidget *parent)
             qDebug() << "index is not valid";
             return;
         }
+        ui->showsTree->setCurrentIndex(index);
+
         auto id = index.model()->data(index, Qt::UserRole).toString().toStdString();
         qDebug() << "id from UserRole:" << q(id);
 
@@ -602,23 +619,31 @@ MainWindow::MainWindow(QWidget *parent)
         QMenu menu;
 
         QBrush brush = index.data(Qt::ForegroundRole).value<QBrush>();
-        if ((brush.color() == QColor("green") || brush.color() == QColor("cyan")) && _vlcFound) {
+        if (brush.color() == QColor("green") || brush.color() == QColor("cyan")) {
             auto fileName = get_filename_for_tv_episode_id(id.c_str());
             if (fileName) {
                 std::string path(fileName);
                 free_string(fileName);
-                QAction * vlcAction = menu.addAction(q("Open in VLC"));
-                connect(vlcAction, &QAction::triggered, [this, path]() {
-                    QStringList args = _vlcArgs;
-                    args.append(QString::fromStdString(path));
-                    if (_vlcProgram == "flatpak") {
-                        args.append("@@");
-                    }
-                    qDebug() << "Launching VLC:" << _vlcProgram << args;
-                    if (!QProcess::startDetached(_vlcProgram, args)) {
-                        qDebug() << "Failed to start VLC process";
-                    }
+
+                QAction * loadAction = menu.addAction(q("Load in Player"));
+                connect(loadAction, &QAction::triggered, [this, path]() {
+                    _loadInPlayer(QString::fromStdString(path));
                 });
+
+                if (_vlcFound) {
+                    QAction * vlcAction = menu.addAction(q("Open in VLC"));
+                    connect(vlcAction, &QAction::triggered, [this, path]() {
+                        QStringList args = _vlcArgs;
+                        args.append(QString::fromStdString(path));
+                        if (_vlcProgram == "flatpak") {
+                            args.append("@@");
+                        }
+                        qDebug() << "Launching VLC:" << _vlcProgram << args;
+                        if (!QProcess::startDetached(_vlcProgram, args)) {
+                            qDebug() << "Failed to start VLC process";
+                        }
+                    });
+                }
             }
         }
 
@@ -721,6 +746,8 @@ MainWindow::MainWindow(QWidget *parent)
             qDebug() << "index is not valid";
             return;
         }
+        ui->filmsTree->setCurrentIndex(index);
+
         auto id = index.model()->data(index, Qt::UserRole).toString().toStdString();
         qDebug() << "id from UserRole:" << q(id);
 
@@ -736,23 +763,31 @@ MainWindow::MainWindow(QWidget *parent)
         QMenu menu;
 
         QBrush brush = index.data(Qt::ForegroundRole).value<QBrush>();
-        if ((brush.color() == QColor("green") || brush.color() == QColor("cyan")) && _vlcFound) {
+        if (brush.color() == QColor("green") || brush.color() == QColor("cyan")) {
             auto fileName = get_filename_for_film_video_id(id.c_str());
             if (fileName) {
                 std::string path(fileName);
                 free_string(fileName);
-                QAction * vlcAction = menu.addAction(q("Open in VLC"));
-                connect(vlcAction, &QAction::triggered, [this, path]() {
-                    QStringList args = _vlcArgs;
-                    args.append(QString::fromStdString(path));
-                    if (_vlcProgram == "flatpak") {
-                        args.append("@@");
-                    }
-                    qDebug() << "Launching VLC:" << _vlcProgram << args;
-                    if (!QProcess::startDetached(_vlcProgram, args)) {
-                        qDebug() << "Failed to start VLC process";
-                    }
+
+                QAction * loadAction = menu.addAction(q("Load in Player"));
+                connect(loadAction, &QAction::triggered, [this, path]() {
+                    _loadInPlayer(QString::fromStdString(path));
                 });
+
+                if (_vlcFound) {
+                    QAction * vlcAction = menu.addAction(q("Open in VLC"));
+                    connect(vlcAction, &QAction::triggered, [this, path]() {
+                        QStringList args = _vlcArgs;
+                        args.append(QString::fromStdString(path));
+                        if (_vlcProgram == "flatpak") {
+                            args.append("@@");
+                        }
+                        qDebug() << "Launching VLC:" << _vlcProgram << args;
+                        if (!QProcess::startDetached(_vlcProgram, args)) {
+                            qDebug() << "Failed to start VLC process";
+                        }
+                    });
+                }
             }
         }
 
@@ -1048,6 +1083,36 @@ void MainWindow::_findVlc() {
     qDebug() << "VLC not found (neither 'vlc' in PATH nor 'org.videolan.VLC' in flatpak)";
 }
 
+void MainWindow::_clearMetadataPanel() {
+    ui->metadataStill->clear();
+    ui->metadataTitle->clear();
+    ui->metadataDate->clear();
+    ui->metadataLanguage->clear();
+    ui->metadataRuntime->clear();
+    ui->metadataOverview->clear();
+    ui->tracksGroup->hide();
+    
+    QLayoutItem *item;
+    while ((item = ui->tracksLayout->takeAt(0)) != nullptr) {
+        if (item->widget()) {
+            delete item->widget();
+        }
+        delete item;
+    }
+}
+
+void MainWindow::_loadInPlayer(QString path) {
+    player->stop();
+    player->setSource(QUrl::fromLocalFile(path));
+    player->setPlaybackRate(1.0);
+    if (_mRequestedPlayerPosition > 0) {
+        player->setPosition(_mRequestedPlayerPosition);
+    }
+    player->play();
+    player->pause();
+}
+
+
 void MainWindow::processMessage(std::string message) {
     qDebug() << "[ cpp] incoming message:" << message;
     if (message == "\"WorkerReady\"") {
@@ -1193,9 +1258,64 @@ void MainWindow::processMessage(std::string message) {
             auto path = m["SetTmdbStill"]["path"].get<std::string>();
             QPixmap pixmap(q(path));
             if (!pixmap.isNull()) {
-                // Scale to fit within the same dimensions as the video player.
-                // This ensures it doesn't push the buttons off-screen by being too tall.
-                ui->tmdbStillLabel->setPixmap(pixmap.scaled(ui->videoWidget->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                if (pixmap.width() > 0) {
+                    ui->metadataStill->setPixmap(pixmap.scaled(ui->metadataStill->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation));
+                }
+            }
+        }
+    } catch (...) {}
+
+    try {
+        if (m.contains("SetMetadata")) {
+            auto metadata = m["SetMetadata"]["metadata"];
+            ui->metadataTitle->setText(q(metadata["title"].get<std::string>()));
+            ui->metadataOverview->setText(q(metadata["overview"].get<std::string>()));
+            
+            std::string lang = metadata["language"].get<std::string>();
+            ui->metadataLanguage->setText(lang.empty() ? "" : QString("Language: %1").arg(q(lang)));
+            
+            std::string date = metadata["release_date"].get<std::string>();
+            ui->metadataDate->setText(date.empty() ? "" : QString("Release Date: %1").arg(q(date)));
+            
+            std::string runtime = metadata["runtime"].get<std::string>();
+            ui->metadataRuntime->setText(runtime.empty() ? "" : QString("Runtime: %1").arg(q(runtime)));
+        }
+    } catch (...) {}
+
+    try {
+        if (m.contains("SetMkvTracks")) {
+            auto tracks = m["SetMkvTracks"]["tracks"];
+            ui->tracksGroup->setVisible(!tracks.empty());
+            for (const auto& track : tracks) {
+                int id = track["id"].get<int>();
+                std::string type = track["type_"].get<std::string>();
+                std::string codec = track["codec"].get<std::string>();
+                std::string lang = track["language"].get<std::string>();
+                std::string name = track["name"].is_null() ? "" : track["name"].get<std::string>();
+
+                QString text = QString("[%1] %2 (%3) - %4")
+                    .arg(id)
+                    .arg(q(type))
+                    .arg(q(codec))
+                    .arg(q(lang));
+
+                if (!name.empty()) {
+                    text += QString(" - %1").arg(q(name));
+                }
+
+                QStringList flags;
+                if (track["is_default"].get<bool>()) flags << "default";
+                if (track["is_forced"].get<bool>()) flags << "forced";
+                if (track["is_hearing_impaired"].get<bool>()) flags << "HI";
+                if (track["is_commentary"].get<bool>()) flags << "commentary";
+
+                if (!flags.isEmpty()) {
+                    text += QString(" [%1]").arg(flags.join(", "));
+                }
+
+                QLabel *label = new QLabel(text);
+                label->setWordWrap(true);
+                ui->tracksLayout->addWidget(label);
             }
         }
     } catch (...) {}

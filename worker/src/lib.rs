@@ -103,6 +103,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 RestoreOriginal(id) => requests::restore_original(&MEDIA, id),
                 MatchScan(id, command) => requests::match_scan(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
                 FetchTmdbStill(id) => requests::fetch_tmdb_still(&MEDIA, id),
+                FetchMkvInfo(path) => requests::fetch_mkv_info(&MEDIA, path),
                 _ => vec![],
             };
 
@@ -322,6 +323,15 @@ pub extern "C" fn fetch_tmdb_still(id: *const c_char, is_tv: bool) {
     };
 
     SENDER.get().map(|s| s.lock().unwrap().send(FetchTmdbStill(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn fetch_mkv_info(path: *const c_char) {
+    println!("[rust] fetch_mkv_info called");
+
+    let path = cstr(path);
+
+    SENDER.get().map(|s| s.lock().unwrap().send(FetchMkvInfo(path)));
 }
 
 #[unsafe(no_mangle)]

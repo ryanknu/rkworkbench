@@ -23,8 +23,10 @@ pub struct TmdbFilm {
     pub(crate) title: String,
     pub(crate) original_title: String,
     pub(crate) release_date: String,
-    overview: String,
+    pub(crate) overview: String,
     pub(crate) poster_path: Option<String>,
+    pub(crate) original_language: String,
+    pub(crate) runtime: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,7 +53,10 @@ pub struct TmdbTvShow {
     pub(crate) first_air_date: String,
     pub(crate) name: String,
     pub(crate) original_name: String,
+    pub(crate) overview: String,
+    pub(crate) original_language: String,
     pub(crate) poster_path: Option<String>,
+    pub(crate) episode_run_time: Option<Vec<usize>>,
     seasons: Vec<TmdbTvShowSeasonsVec>,
 }
 
@@ -62,7 +67,10 @@ pub struct TmdbTvShowEpisode {
     pub(crate) episode_number: usize,
     pub(crate) season_number: usize,
     pub(crate) show_id: usize,
+    pub(crate) overview: String,
+    pub(crate) air_date: Option<String>,
     pub(crate) still_path: Option<String>,
+    pub(crate) runtime: Option<usize>,
 }
 
 #[derive(Deserialize, Debug)]

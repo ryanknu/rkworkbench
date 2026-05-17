@@ -71,6 +71,34 @@ pub enum UiEvent {
     SetTmdbStill {
         path: String,
     },
+    SetMetadata {
+        metadata: MediaMetadata,
+    },
+    SetMkvTracks {
+        tracks: Vec<MkvTrack>,
+    },
+}
+
+#[derive(Serialize)]
+pub struct MediaMetadata {
+    pub title: String,
+    pub overview: String,
+    pub language: String,
+    pub release_date: String,
+    pub runtime: String,
+}
+
+#[derive(Serialize)]
+pub struct MkvTrack {
+    pub id: u64,
+    pub type_: String,
+    pub codec: String,
+    pub language: String,
+    pub name: Option<String>,
+    pub is_default: bool,
+    pub is_forced: bool,
+    pub is_hearing_impaired: bool,
+    pub is_commentary: bool,
 }
 
 enum Mode {

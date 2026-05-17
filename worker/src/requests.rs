@@ -1,6 +1,6 @@
 use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, FilmVideoId, MediaId, TvShow, TvShowEpisode, TvShowId, TvEpisodeId};
 use crate::tmdb::{TmdbItem, TmdbTvShow, TmdbTvShowSeason};
-use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, MatchResult, Tree, TreeItem, TreeItemChange::ChangeColor, UiEvent};
+use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, MatchResult, Tree, TreeItem, TreeItemChange::ChangeColor, UiEvent, MediaMetadata, MkvTrack};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use std::fs;
@@ -36,6 +36,7 @@ pub enum IncomingRequest {
     RestoreOriginal(MappableMediaId),
     MatchScan(FileBackedTitleId, String),
     FetchTmdbStill(MappableMediaId),
+    FetchMkvInfo(String),
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -1506,38 +1507,60 @@ pub fn match_scan(media: &MediaState, id: FileBackedTitleId, command_str: String
 
 pub fn fetch_tmdb_still(media: &MediaState, id: MappableMediaId) -> Vec<UiEvent> {
     let media = unlock_media!(media);
-    let (still_path, name) = match &id {
+    let mut events = Vec::new();
+
+    let (still_path, name, metadata) = match &id {
         MappableMediaId::TvEpisode(eid) => {
             let episodes = media.tv_show_episodes.borrow();
             let Some(ep) = episodes.iter().find(|e| e.id == *eid) else { return vec![]; };
-            (ep.still_path.clone(), format!("S{:0>2}E{:0>2}.jpg", ep.season_number, ep.number))
+            let shows = media.tv_shows.borrow();
+            let show = shows.iter().find(|s| s.id == ep.show_id);
+            let metadata = MediaMetadata {
+                title: format!("{} - {} (S{:0>2}E{:0>2})", ep.show_name, ep.name, ep.season_number, ep.number),
+                overview: ep.overview.clone(),
+                language: show.map(|s| s.original_language.clone()).unwrap_or_default(),
+                release_date: ep.air_date.clone().unwrap_or_default(),
+                runtime: ep.runtime.or(show.and_then(|s| s.runtime)).map(|r| format!("{} min", r)).unwrap_or_default(),
+            };
+            (ep.still_path.clone(), format!("S{:0>2}E{:0>2}.jpg", ep.season_number, ep.number), metadata)
         }
         MappableMediaId::FilmVideo(fvid) => {
             let videos = media.film_videos.borrow();
             let Some(video) = videos.iter().find(|v| v.id == *fvid) else { return vec![]; };
             let films = media.films.borrow();
             let Some(film) = films.iter().find(|f| f.id == video.film_id) else { return vec![]; };
-            (film.poster_path.clone(), "poster.jpg".to_string())
+            let metadata = MediaMetadata {
+                title: format!("{} - {}", film.name, video.name),
+                overview: film.overview.clone(),
+                language: film.original_language.clone(),
+                release_date: film.release_date.clone(),
+                runtime: film.runtime.map(|r| format!("{} min", r)).unwrap_or_default(),
+            };
+            (film.poster_path.clone(), "poster.jpg".to_string(), metadata)
         }
     };
 
-    let Some(path) = still_path else { return vec![]; };
+    events.push(UiEvent::SetMetadata { metadata });
 
-    let filename = format!("{}_{}", id.id(), name);
-    let local_path = media.stills_dir.join(&filename);
+    if let Some(path) = still_path {
+        let filename = format!("{}_{}", id.id(), name);
+        let local_path = media.stills_dir.join(&filename);
 
-    if !local_path.exists() {
-        let full_url = format!("https://image.tmdb.org/t/p/w500{}", path);
-        if let Ok(buf) = ureq::get(&full_url).call().and_then(|res| res.into_body().read_to_vec()) {
-            let _ = std::fs::write(&local_path, buf);
-        } else {
-            return vec![];
+        if !local_path.exists() {
+            let full_url = format!("https://image.tmdb.org/t/p/w500{}", path);
+            if let Ok(buf) = ureq::get(&full_url).call().and_then(|res| res.into_body().read_to_vec()) {
+                let _ = std::fs::write(&local_path, buf);
+            }
+        }
+
+        if local_path.exists() {
+            events.push(UiEvent::SetTmdbStill {
+                path: local_path.to_string_lossy().into_owned(),
+            });
         }
     }
 
-    vec![UiEvent::SetTmdbStill {
-        path: local_path.to_string_lossy().into_owned(),
-    }]
+    events
 }
 
 pub fn delete_film(media: &MediaState, id: String) -> Vec<UiEvent> {
@@ -1773,4 +1796,55 @@ fn remove_empty_folders(path: &std::path::Path, can_delete: bool) {
             }
         }
     }
+}
+
+pub fn fetch_mkv_info(_media: &MediaState, path: String) -> Vec<UiEvent> {
+    let output = std::process::Command::new("mkvmerge")
+        .args(["-J", &path])
+        .output();
+    
+    let Ok(output) = output else {
+        println!("Failed to run mkvmerge -J on {:?}", path);
+        return vec![];
+    };
+    
+    if !output.status.success() {
+        println!("mkvmerge -J failed for {:?} with status {:?}", path, output.status);
+        return vec![];
+    }
+    
+    let val: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap_or(serde_json::Value::Null);
+    if val.is_null() {
+        return vec![];
+    }
+    
+    let mut tracks = Vec::new();
+    if let Some(tracks_val) = val.get("tracks").and_then(|t| t.as_array()) {
+        for track in tracks_val {
+            let id = track.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+            let type_ = track.get("type").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+            let codec = track.get("codec").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+            let properties = track.get("properties");
+            let language = properties.and_then(|p| p.get("language")).and_then(|v| v.as_str()).unwrap_or("und").to_string();
+            let name = properties.and_then(|p| p.get("track_name")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            let is_default = properties.and_then(|p| p.get("default_track")).and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_forced = properties.and_then(|p| p.get("forced_track")).and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_hearing_impaired = properties.and_then(|p| p.get("hearing_impaired").or(p.get("hearing_impaired_flag"))).and_then(|v| v.as_bool()).unwrap_or(false);
+            let is_commentary = properties.and_then(|p| p.get("commentary").or(p.get("commentary_flag"))).and_then(|v| v.as_bool()).unwrap_or(false);
+            
+            tracks.push(MkvTrack {
+                id,
+                type_,
+                codec,
+                language,
+                name,
+                is_default,
+                is_forced,
+                is_hearing_impaired,
+                is_commentary,
+            });
+        }
+    }
+    
+    vec![UiEvent::SetMkvTracks { tracks }]
 }
