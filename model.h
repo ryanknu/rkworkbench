@@ -39,10 +39,6 @@ public:
     Episode& episodeById(const std::string& id);
     RippedTitle& titleById(const std::string& id);
     void setPreprocessorCommand(std::string cmd);
-    void identifyEpisode(const std::string& titleId, std::string showId);
-    bool isIdentified(const std::string& item) const;
-    void confirmPlays(const std::string& episodeId);
-    bool isConfirmedPlays(const std::string& episodeId) const;
     std::vector<std::string> generateJobsFromState();
     int queuedAndPendingJobs();
     void scanLocalTmdbData(const std::string& filter);
@@ -55,9 +51,6 @@ public:
     std::vector<std::string> getCommandsToUnDeleteFileForTitle(const std::string& titleId);
     std::vector<std::string> getCommandsToUploadEntireShow(const std::string& showId);
     int requestedPosition();
-    void setRequestedPosition(int position);
-    bool canGarbageCollect();
-    std::string getGarbageCollectableBytes();
 
     // Splitter for tree widths
     void resetDrag();
@@ -81,9 +74,6 @@ private:
     std::unordered_map<std::string, std::unique_ptr<Episode>> _mEpisodes;
     std::unordered_map<std::string, std::unique_ptr<RippedTitle>> _mTitles;
     std::unordered_map<std::string, std::filesystem::path> _mLocalEpisodes;
-    std::unordered_map<std::string, std::string> _mIdentifiedEpisodes;
-    std::vector<std::string> _mConfirmedEpisodes;
-    std::vector<std::string> _mConfirmedPlayPaths;
 
     // Configurations
     std::filesystem::path _mHomeDirPath;
@@ -122,8 +112,6 @@ public:
     std::string friendlyTitle();
     std::filesystem::path path();
     [[nodiscard]] std::uintmax_t size() const;
-    void setConfirmed(bool confirmed);
-    bool isDeleted() const;
     bool operator<(const RippedTitle& other) const;
 
 private:
@@ -131,7 +119,6 @@ private:
     std::uintmax_t _mSize;
     std::string _mDiskName;
     std::string _mTitleName;
-    bool _mIsConfirmed = false;
     static std::atomic<std::uint64_t> _mIdSequence;
 };
 

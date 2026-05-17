@@ -267,31 +267,6 @@ void AppModel::setPreprocessorCommand(std::string cmd)
     _mPreprocessorCommand = std::move(cmd);
 }
 
-void AppModel::identifyEpisode(const std::string& titleId, std::string showId)
-{
-    _mIdentifiedEpisodes[titleId] = std::move(showId);
-}
-
-bool AppModel::isIdentified(const std::string& item) const {
-    return std::ranges::any_of(_mIdentifiedEpisodes, [&](const auto& pair) {
-        return pair.first == item || pair.second == item;
-    });
-}
-
-void AppModel::confirmPlays(const std::string& episodeId) {
-    for (const auto& pair : _mIdentifiedEpisodes) {
-        if (pair.second == episodeId) {
-            if (hasTitle(pair.first)) {
-                titleById(pair.first).setConfirmed(true);
-            }
-        }
-    }
-}
-
-bool AppModel::isConfirmedPlays(const std::string& episodeId) const {
-    return std::ranges::find(_mConfirmedEpisodes, episodeId) != _mConfirmedEpisodes.end();
-}
-
 
 RippedTitle::RippedTitle(fs::path path, std::uintmax_t size, std::string diskName, std::string titleName)
 {
@@ -352,19 +327,6 @@ int AppModel::requestedPosition() {
     return _mRequestedPosition;
 }
 
-void AppModel::setRequestedPosition(int position)
-{
-    _mRequestedPosition = position;
-}
-
-void RippedTitle::setConfirmed(bool confirmed) {
-    _mIsConfirmed = confirmed;
-}
-
-bool RippedTitle::isDeleted() const {
-    return _mPath.string().ends_with(".d") || _mIsConfirmed;
-}
-
 Show& AppModel::showById(const std::string& id) {
     return *_mShows.at(id);
 }
@@ -387,30 +349,6 @@ bool AppModel::hasEpisode(const std::string& id) {
 
 bool AppModel::hasTitle(const std::string& id) {
     return _mTitles.contains(id);
-}
-
-bool AppModel::canGarbageCollect() {
-    for (auto& title : titles()) {
-        if (title->isDeleted()) {
-            return true;
-        }
-    }
-    return false;
-}
-
-std::string AppModel::getGarbageCollectableBytes() {
-    uintmax_t bytes = 0;
-    for (auto& title : titles()) {
-        if (title->isDeleted()) {
-            bytes += title->size();
-        }
-    }
-
-    double gb = static_cast<double>(bytes) / (1024.0 * 1024.0 * 1024.0);
-    std::stringstream ss;
-    ss << std::fixed << std::setprecision(1) << gb << "G";
-
-    return ss.str();
 }
 
 void AppModel::resetDrag() {

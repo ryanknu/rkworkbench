@@ -177,14 +177,7 @@
         <item>
          <widget class="QPushButton" name="identifyBtn">
           <property name="text">
-           <string>Identify Selected</string>
-          </property>
-         </widget>
-        </item>
-        <item>
-         <widget class="QPushButton" name="execBtn">
-          <property name="text">
-           <string>Rename Identified</string>
+           <string>Identify Selected (Rename)</string>
           </property>
          </widget>
         </item>
@@ -389,6 +382,9 @@
           </item>
           <item>
            <widget class="QGroupBox" name="tracksGroup">
+            <property name="visible">
+             <bool>false</bool>
+            </property>
             <property name="title">
              <string>Matroska Tracks</string>
             </property>

@@ -19,7 +19,6 @@ pub enum IncomingRequest {
     LookupTv(String, Option<String>),
     MapMedia(FileBackedTitleId, MappableMediaId),
     PerformInitialLoad,
-    RenameIdentified,
     RsyncRequest(String, String, String),
     ConfirmPlay(MappableMediaId),
     DeleteTvShow(String),
@@ -168,11 +167,75 @@ pub fn map_media(media: &MediaState, from: FileBackedTitleId, to: MappableMediaI
         return vec![];
     };
 
-    // TODO: Rename the file here.
+    let mut events = Vec::new();
 
-    vec![
-        get_tree_change_action_for_mapping_file(from, true),
-    ].into_iter().chain(get_tree_change_action_for_mappable(&media, to)).collect()
+    let media_dir = media.media_dir.clone();
+    let output_dir = media_dir.join("output");
+
+    let mut target_path = None;
+
+    {
+        let titles = media.file_backed_titles.borrow();
+        if let Some(title) = titles.iter().find(|t| t.id == from) {
+            if let Some(mapped_id) = &title.mapped_media {
+                let target_rel_path = match mapped_id {
+                    MediaId::TvEpisode(ep_id) => {
+                        let episodes = media.tv_show_episodes.borrow();
+                        if let Some(episode) = episodes.iter().find(|e| e.id == *ep_id) {
+                            if let Some(show_key) = media.tv_show_key(&episode.show_id) {
+                                Some(vec![show_key, format!("{}.mkv", episode.series_key)])
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    }
+                    MediaId::FilmVideo(fv_id) => {
+                        let videos = media.film_videos.borrow();
+                        if let Some(video) = videos.iter().find(|v| v.id == *fv_id) {
+                            Some(video.get_ideal_storage_path())
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
+                if let Some(rel_path) = target_rel_path {
+                    let mut tp = output_dir.clone();
+                    for part in rel_path {
+                        tp = tp.join(part);
+                    }
+                    target_path = Some((title.path.clone(), tp));
+                }
+            }
+        }
+    }
+
+    if let Some((source, dest)) = target_path {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+
+        println!("Renaming {:?} to {:?}", source, dest);
+        if let Err(e) = fs::rename(&source, &dest) {
+            println!("Error renaming file {:?} to {:?}: {:?}", source, dest, e);
+        } else {
+            // Successfully renamed. Update path in media state.
+            if let Some(title) = media.file_backed_titles.borrow_mut().iter_mut().find(|t| t.id == from) {
+                title.path = dest.clone();
+            }
+            events.push(UiEvent::RemoveTreeItemById {
+                tree: Tree::Files,
+                id: from.0.clone(),
+            });
+        }
+    }
+
+    events.extend(get_tree_change_action_for_mappable(&media, to));
+    events.push(get_garbage_size(&media));
+    events
 }
 
 pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<String>) -> Vec<UiEvent> {
@@ -252,90 +315,6 @@ pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Strin
     results
 }
 
-pub fn rename_identified(media: &MediaState) -> Vec<UiEvent> {
-    let media = unlock_media!(media);
-    let mut events = Vec::new();
-
-    let media_dir = media.media_dir.clone();
-    let output_dir = media_dir.join("output");
-
-    let mut to_rename = Vec::new();
-
-    {
-        let titles = media.file_backed_titles.borrow();
-        for title in titles.iter() {
-            if let Some(mapped_id) = &title.mapped_media {
-                let target_rel_path = match mapped_id {
-                    MediaId::TvEpisode(ep_id) => {
-                        let episodes = media.tv_show_episodes.borrow();
-                        if let Some(episode) = episodes.iter().find(|e| e.id == *ep_id) {
-                            if let Some(show_key) = media.tv_show_key(&episode.show_id) {
-                                Some(vec![show_key, format!("{}.mkv", episode.series_key)])
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    }
-                    MediaId::FilmVideo(fv_id) => {
-                        let videos = media.film_videos.borrow();
-                        if let Some(video) = videos.iter().find(|v| v.id == *fv_id) {
-                            Some(video.get_ideal_storage_path())
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                };
-
-                if let Some(rel_path) = target_rel_path {
-                    let mut target_path = output_dir.clone();
-                    for part in rel_path {
-                        target_path = target_path.join(part);
-                    }
-                    to_rename.push((title.id.clone(), title.path.clone(), target_path));
-                }
-            }
-        }
-    }
-
-    for (id, source, dest) in to_rename {
-        if let Some(parent) = dest.parent() {
-            if let Err(e) = fs::create_dir_all(parent) {
-                println!("Error creating directory {:?}: {:?}", parent, e);
-                continue;
-            }
-        }
-
-        println!("Renaming {:?} to {:?}", source, dest);
-        if let Err(e) = fs::rename(&source, &dest) {
-            println!("Error renaming file {:?} to {:?}: {:?}", source, dest, e);
-            continue;
-        }
-
-        // Successfully renamed. Update path in media state.
-        let mut mapped_id = None;
-        if let Some(title) = media.file_backed_titles.borrow_mut().iter_mut().find(|t| t.id == id) {
-            title.path = dest.clone();
-            mapped_id = title.mapped_media.clone();
-        }
-
-        if let Some(MediaId::TvEpisode(eid)) = mapped_id {
-            events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::TvEpisode(eid)));
-        } else if let Some(MediaId::FilmVideo(fvid)) = mapped_id {
-            events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::FilmVideo(fvid)));
-        }
-
-        events.push(UiEvent::RemoveTreeItemById {
-            tree: Tree::Files,
-            id: id.0,
-        });
-    }
-
-    events.push(get_garbage_size(&media));
-    events
-}
 
 pub fn rsync_show(media: &MediaState, id: String, tv_loc: String, movie_loc: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
     let raw_id = strip_id_prefix(&id);
@@ -592,7 +571,7 @@ pub fn undelete_title(media: &MediaState, id: FileBackedTitleId) -> Vec<UiEvent>
         }
     }
 
-    if let Some((old_path, old_file_name, is_mapped)) = title_to_update {
+    if let Some((old_path, old_file_name, _is_mapped)) = title_to_update {
         let new_file_name = old_file_name[..old_file_name.len() - 2].to_owned();
         let mut new_path = old_path.clone();
         new_path.set_file_name(&new_file_name);
@@ -612,7 +591,7 @@ pub fn undelete_title(media: &MediaState, id: FileBackedTitleId) -> Vec<UiEvent>
         events.push(UiEvent::ChangeTreeItem {
             tree: Tree::Files,
             id: id.0.clone(),
-            change: ChangeColor(if is_mapped { "orange".to_owned() } else { "Default".to_owned() }),
+            change: ChangeColor("Default".to_owned()),
         });
     }
 
@@ -1800,6 +1779,8 @@ fn remove_empty_folders(path: &std::path::Path, can_delete: bool) {
 }
 
 pub fn fetch_mkv_info(_media: &MediaState, path: String) -> Vec<UiEvent> {
+    let file_size = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+
     let output = std::process::Command::new("mkvmerge")
         .args(["-J", &path])
         .output();
@@ -1818,6 +1799,13 @@ pub fn fetch_mkv_info(_media: &MediaState, path: String) -> Vec<UiEvent> {
     if val.is_null() {
         return vec![];
     }
+
+    // Try to get more info from ffprobe
+    let ffprobe_val: Option<serde_json::Value> = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "stream=index,codec_type,codec_name,profile,level,bit_rate:format=duration,size", "-of", "json", &path])
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { serde_json::from_slice(&o.stdout).ok() } else { None });
     
     let mut tracks = Vec::new();
     if let Some(tracks_val) = val.get("tracks").and_then(|t| t.as_array()) {
@@ -1833,6 +1821,125 @@ pub fn fetch_mkv_info(_media: &MediaState, path: String) -> Vec<UiEvent> {
             let is_hearing_impaired = properties.and_then(|p| p.get("hearing_impaired").or(p.get("hearing_impaired_flag"))).and_then(|v| v.as_bool()).unwrap_or(false);
             let is_commentary = properties.and_then(|p| p.get("commentary").or(p.get("commentary_flag"))).and_then(|v| v.as_bool()).unwrap_or(false);
             
+            let mut profile = properties.and_then(|p| p.get("video_codec_profile")).and_then(|v| v.as_str()).map(|s| s.to_string());
+            
+            // Supplement with ffprobe data if it's a video track
+            let mut bitrate = None;
+            if type_ == "video" {
+                if let Some(ff_streams) = ffprobe_val.as_ref().and_then(|v| v.get("streams")).and_then(|v| v.as_array()) {
+                    if let Some(ff_track) = ff_streams.iter().find(|s| s.get("index").and_then(|v| v.as_u64()) == Some(id)) {
+                        // Extract profile and level from ffprobe (usually better/more consistent than mkvmerge)
+                        if let Some(p) = ff_track.get("profile").and_then(|v| v.as_str()) {
+                            if p != "unknown" {
+                                let mut p_full = p.to_string();
+                                if let Some(l) = ff_track.get("level").and_then(|v| v.as_i64()) {
+                                    // Convert level_idc to string
+                                    let codec_name = ff_track.get("codec_name").and_then(|v| v.as_str()).unwrap_or("");
+                                    let l_str = if codec_name == "hevc" {
+                                        match l {
+                                            30 => Some("1.0".to_string()),
+                                            60 => Some("2.0".to_string()),
+                                            63 => Some("2.1".to_string()),
+                                            90 => Some("3.0".to_string()),
+                                            93 => Some("3.1".to_string()),
+                                            120 => Some("4.0".to_string()),
+                                            123 => Some("4.1".to_string()),
+                                            150 => Some("5.0".to_string()),
+                                            153 => Some("5.1".to_string()),
+                                            156 => Some("5.2".to_string()),
+                                            180 => Some("6.0".to_string()),
+                                            183 => Some("6.1".to_string()),
+                                            186 => Some("6.2".to_string()),
+                                            _ => Some(format!("{:.1}", l as f64 / 30.0)),
+                                        }
+                                    } else if codec_name == "h264" {
+                                        match l {
+                                            10 => Some("1.0".to_string()),
+                                            11 => Some("1.1".to_string()),
+                                            12 => Some("1.2".to_string()),
+                                            13 => Some("1.3".to_string()),
+                                            20 => Some("2.0".to_string()),
+                                            21 => Some("2.1".to_string()),
+                                            22 => Some("2.2".to_string()),
+                                            30 => Some("3.0".to_string()),
+                                            31 => Some("3.1".to_string()),
+                                            32 => Some("3.2".to_string()),
+                                            40 => Some("4.0".to_string()),
+                                            41 => Some("4.1".to_string()),
+                                            42 => Some("4.2".to_string()),
+                                            50 => Some("5.0".to_string()),
+                                            51 => Some("5.1".to_string()),
+                                            52 => Some("5.2".to_string()),
+                                            _ => Some(format!("{:.1}", l as f64 / 10.0)),
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                    
+                                    if let Some(ls) = l_str {
+                                        p_full = format!("{} @L{}", p_full, ls);
+                                    }
+                                }
+                                profile = Some(p_full);
+                            }
+                        }
+                        
+                        // Bitrate from ffprobe stream
+                        bitrate = ff_track.get("bit_rate").and_then(|v| v.as_str())
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .map(|bps| {
+                                if bps >= 1_000_000.0 {
+                                    format!("{:.1} Mbps", bps / 1_000_000.0)
+                                } else {
+                                    format!("{:.0} kbps", bps / 1_000.0)
+                                }
+                            });
+                    }
+                }
+                
+                // Fallback to mkvmerge tags if ffprobe didn't have bitrate
+                if bitrate.is_none() {
+                    let bytes = properties.and_then(|p| p.get("tag_statistics_number_of_bytes"))
+                        .and_then(|v| v.as_u64().or_else(|| v.as_str().and_then(|s| s.parse().ok())));
+                    let duration_val = properties.and_then(|p| p.get("tag_statistics_duration"));
+                    
+                    let duration_ns = if let Some(v) = duration_val {
+                        if let Some(s) = v.as_str() {
+                            let parts: Vec<&str> = s.split(':').collect();
+                            if parts.len() == 3 {
+                                let h: f64 = parts[0].parse().unwrap_or(0.0);
+                                let m: f64 = parts[1].parse().unwrap_or(0.0);
+                                let s: f64 = parts[2].parse().unwrap_or(0.0);
+                                Some(((h * 3600.0 + m * 60.0 + s) * 1_000_000_000.0) as u64)
+                            } else {
+                                None
+                            }
+                        } else {
+                            v.as_u64()
+                        }
+                    } else {
+                        None
+                    };
+
+                    let d_ns = duration_ns.or(val.get("container").and_then(|c| c.get("properties")).and_then(|p| p.get("duration")).and_then(|v| v.as_u64()));
+                    
+                    if let (Some(b), Some(d)) = (bytes, d_ns) {
+                        if d > 0 {
+                            let bps = (b as f64 * 8.0) / (d as f64 / 1_000_000_000.0);
+                            let mbps = bps / 1_000_000.0;
+                            bitrate = Some(format!("{:.1} Mbps", mbps));
+                        }
+                    } else if let Some(d) = d_ns {
+                        // Ultimate fallback: Use total file size and duration
+                        if d > 0 && file_size > 0 {
+                            let bps = (file_size as f64 * 8.0) / (d as f64 / 1_000_000_000.0);
+                            let mbps = bps / 1_000_000.0;
+                            bitrate = Some(format!("~{:.1} Mbps", mbps));
+                        }
+                    }
+                }
+            }
+
             tracks.push(MkvTrack {
                 id,
                 type_,
@@ -1843,6 +1950,8 @@ pub fn fetch_mkv_info(_media: &MediaState, path: String) -> Vec<UiEvent> {
                 is_forced,
                 is_hearing_impaired,
                 is_commentary,
+                profile,
+                bitrate,
             });
         }
     }

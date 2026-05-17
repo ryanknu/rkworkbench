@@ -100,7 +100,6 @@ extern "C" {
 	void initial_load();
 	void lookup_film(const char* id, const char* api_key);
 	void lookup_tv(const char* id, const char* api_key);
-	void rename_identified();
 	void rsync_show(const char* show_id, const char* tv_location, const char* movie_location);
 	void delete_tv_show(const char* show_id);
 	void delete_tv_season(const char* show_id, size_t season_number);

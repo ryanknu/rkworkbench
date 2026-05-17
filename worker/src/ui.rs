@@ -100,6 +100,8 @@ pub struct MkvTrack {
     pub is_forced: bool,
     pub is_hearing_impaired: bool,
     pub is_commentary: bool,
+    pub profile: Option<String>,
+    pub bitrate: Option<String>,
 }
 
 enum Mode {
@@ -154,8 +156,6 @@ pub fn build_tv_shows_tree(state: &MediaState) -> Vec<UiEvent> {
             "cyan".to_owned()
         } else if on_disk_size.is_some() {
             "green".to_owned()
-        } else if state.is_mapped_to_file(&id) {
-            "orange".to_owned()
         } else {
             "Default".to_owned()
         };
@@ -187,8 +187,6 @@ pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
             "cyan".to_owned()
         } else if on_disk_size.is_some() {
             "green".to_owned()
-        } else if state.is_mapped_to_file(&id) {
-            "orange".to_owned()
         } else {
             "Default".to_owned()
         };
@@ -245,15 +243,6 @@ pub fn get_tree_change_action_for_mappable(state: &MediaState, id: MappableMedia
             });
         }
         "green".to_owned()
-    } else if state.is_mapped_to_file(&id) {
-        if let Some(base_text) = state.get_mappable_text(&id) {
-            events.push(UiEvent::ChangeTreeItem {
-                tree,
-                id: id.id().to_owned(),
-                change: ChangeText(base_text)
-            });
-        }
-        "orange".to_owned()
     } else {
         if let Some(base_text) = state.get_mappable_text(&id) {
             events.push(UiEvent::ChangeTreeItem {
@@ -274,15 +263,11 @@ pub fn get_tree_change_action_for_mappable(state: &MediaState, id: MappableMedia
     events
 }
 
-pub fn get_tree_change_action_for_mapping_file(id: FileBackedTitleId, is_mapped: bool) -> UiEvent {
+pub fn get_tree_change_action_for_mapping_file(id: FileBackedTitleId, _is_mapped: bool) -> UiEvent {
     UiEvent::ChangeTreeItem {
         tree: Tree::Files,
         id: id.0.to_owned(),
-        change: ChangeColor(if is_mapped {
-            "orange".to_owned()
-        } else {
-            "Default".to_owned()
-        })
+        change: ChangeColor("Default".to_owned())
     }
 }
 
@@ -297,8 +282,6 @@ pub fn get_add_tree_item_for_film(state: &MediaState, id: String, parent_id: Str
         "cyan".to_owned()
     } else if on_disk_size.is_some() {
         "green".to_owned()
-    } else if state.is_mapped_to_file(&mappable_id) {
-        "orange".to_owned()
     } else {
         "Default".to_owned()
     };
@@ -327,8 +310,6 @@ pub fn get_add_tree_item_for_tv_show(state: &MediaState, id: String, parent_id: 
         "cyan".to_owned()
     } else if on_disk_size.is_some() {
         "green".to_owned()
-    } else if state.is_mapped_to_file(&mappable_id) {
-        "orange".to_owned()
     } else {
         "Default".to_owned()
     };

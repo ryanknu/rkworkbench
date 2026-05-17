@@ -179,6 +179,8 @@ void MainWindow::_clearTrees() {
     showsModel->removeRows(0, showsModel->rowCount());
     auto* filmsModel = dynamic_cast<QStandardItemModel *>(ui->filmsTree->model());
     filmsModel->removeRows(0, filmsModel->rowCount());
+
+    _clearMetadataPanel();
 }
 
 void MainWindow::_hideTmdbApiKeyInput() {
@@ -189,100 +191,11 @@ void MainWindow::_hideTmdbApiKeyInput() {
 /**
  * Re-renders the disks tree from app model.
  */
-void MainWindow::_reflowDisksTree() const {
-    // auto* disksModel = dynamic_cast<QStandardItemModel *>(ui->disksTree->model());
-    // disksModel->removeRows(0, disksModel->rowCount());
-    //
-    // std::unordered_map<std::string, QStandardItem*> disks;
-    //
-    // auto titles = appModel->titles();
-    // std::ranges::sort(titles,
-    //     [](RippedTitle* a, RippedTitle* b) {
-    //         return *a < *b;
-    //     }
-    // );
-    //
-    // for (auto& title : titles) {
-    //     auto titleItem = new QStandardItem(q(title->friendlyTitle()));
-    //     titleItem->setData(q(title->id), Qt::UserRole);
-    //     if (title->isDeleted()) {
-    //         titleItem->setForeground(QBrush(QColor("red")));
-    //     }
-    //     else if (appModel->isIdentified(title->id)) {
-    //         titleItem->setForeground(QBrush(QColor("orange")));
-    //     }
-    //
-    //     if (!disks.contains(title->diskName())) {
-    //         auto diskItem = new QStandardItem(q(title->diskName()));
-    //         diskItem->setSelectable(false);
-    //         disksModel->invisibleRootItem()
-    //             ->appendRow(diskItem);
-    //
-    //         diskItem->appendRow(titleItem);
-    //         disks[title->diskName()] = diskItem;
-    //     } else {
-    //         auto diskItem = disks[title->diskName()];
-    //         diskItem->appendRow(titleItem);
-    //     }
-    // }
-    //
-    // ui->disksTree->expandAll();
-}
+void MainWindow::_reflowDisksTree() const {}
 
-/**
- * Re-renders the shows tree from app model.
- */
-void MainWindow::_reflowShowsTree() const {
-    // auto* showsModel = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
-    // showsModel->removeRows(0, showsModel->rowCount());
-    //
-    // std::unordered_map<std::string, QStandardItem*> showItems;
-    //
-    // // Buffer for episodes for sorting
-    // auto episodes = appModel->episodes();
-    // std::ranges::sort(episodes,
-    //     [](Episode* a, Episode* b) {
-    //         return *a < *b;
-    //     }
-    // );
-    //
-    // for (auto& episode : episodes) {
-    //     if (!appModel->hasShow(episode->showId)) continue;
-    //     auto show = appModel->showById(episode->showId);
-    //
-    //     auto episodeItem = new QStandardItem(q(episode->friendlyTitle()));
-    //     episodeItem->setData(q(episode->id), Qt::UserRole);
-    //     if (appModel->isConfirmedPlays(episode->id)) {
-    //         episodeItem->setForeground(QBrush(QColor("cyan")));
-    //     }
-    //     else if (appModel->showHasLocalFile(show.title, episode->seasonKey())) {
-    //         episodeItem->setForeground(QBrush(QColor("green")));
-    //     }
-    //     else if (appModel->isIdentified(std::format("{}", episode->id))) {
-    //         episodeItem->setForeground(QBrush(QColor("orange")));
-    //     }
-    //
-    //     if (!showItems.contains(show.id)) {
-    //         auto showItem = new QStandardItem(q(show.title));
-    //         showItem->setSelectable(false);
-    //         showsModel->invisibleRootItem()
-    //             ->appendRow(showItem);
-    //
-    //         showItem->appendRow(episodeItem);
-    //         showItems.emplace(show.id, showItem);
-    //     } else {
-    //         auto showItem = showItems.at(show.id);
-    //         showItem->appendRow(episodeItem);
-    //     }
-    // }
-    //
-    // ui->showsTree->expandAll();
-}
+void MainWindow::_reflowShowsTree() const {}
 
-void MainWindow::_reflowGcButton() const {
-    // ui->gcBtn->setText(q(std::format("Collect Garbage ({})", appModel->getGarbageCollectableBytes())));
-    // ui->gcBtn->setDisabled(!appModel->canGarbageCollect());
-}
+void MainWindow::_reflowGcButton() const {}
 
 void MainWindow::_reflowTaskList()
 {
@@ -457,6 +370,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->ffmpegStatusWidget->hide();
     ui->rsyncStatusWidget->hide();
     ui->copyStatusWidget->hide();
+    ui->tracksGroup->hide();
     setMouseTrackingRecursive(this, true);
 
     ui->filmsTree->hide();
@@ -910,10 +824,6 @@ MainWindow::MainWindow(QWidget *parent)
             map_film_video(from.c_str(), to.c_str());
     });
 
-    connect(ui->execBtn, &QPushButton::clicked, [&]() {
-        rename_identified();
-    });
-
     connect(ui->gcBtn, &QPushButton::clicked, [&]() {
         collect_garbage();
     });
@@ -1352,18 +1262,36 @@ void MainWindow::processMessage(std::string message) {
         if (m.contains("SetMkvTracks")) {
             auto tracks = m["SetMkvTracks"]["tracks"];
             ui->tracksGroup->setVisible(!tracks.empty());
+
+            // Clear existing tracks first
+            QLayoutItem *item;
+            while ((item = ui->tracksLayout->takeAt(0)) != nullptr) {
+                if (item->widget()) delete item->widget();
+                delete item;
+            }
+
             for (const auto& track : tracks) {
                 int id = track["id"].get<int>();
                 std::string type = track["type_"].get<std::string>();
                 std::string codec = track["codec"].get<std::string>();
                 std::string lang = track["language"].get<std::string>();
                 std::string name = track["name"].is_null() ? "" : track["name"].get<std::string>();
+                std::string profile = track["profile"].is_null() ? "" : track["profile"].get<std::string>();
+                std::string bitrate = track["bitrate"].is_null() ? "" : track["bitrate"].get<std::string>();
 
                 QString text = QString("[%1] %2 (%3) - %4")
                     .arg(id)
                     .arg(q(type))
                     .arg(q(codec))
                     .arg(q(lang));
+
+                if (!profile.empty()) {
+                    text += QString(" (%1)").arg(q(profile));
+                }
+
+                if (!bitrate.empty()) {
+                    text += QString(" @ %1").arg(q(bitrate));
+                }
 
                 if (!name.empty()) {
                     text += QString(" - %1").arg(q(name));
