@@ -7,6 +7,7 @@
 #include <QAction>
 #include <QMediaPlayer>
 #include <QTimer>
+#include <QCloseEvent>
 #include "model.h"
 #include "commandworker.h"
 
@@ -26,6 +27,7 @@ public:
 	void setAppModel(AppModel *theModel, std::string mediaDir);
 	void mouseMoveEvent(QMouseEvent *event) override;
 	void mouseReleaseEvent(QMouseEvent *event) override;
+	void closeEvent(QCloseEvent *event) override;
 
 	Q_INVOKABLE
 	void processMessage(std::string message);
@@ -53,6 +55,8 @@ private:
 	int ffmpegActiveCount = 0;
 	int rsyncQueueCount = 0;
 	int rsyncActiveCount = 0;
+	int copyQueueCount = 0;
+	int copyActiveCount = 0;
 	QTimer *spinnerTimer = nullptr;
 	int spinnerIndex = 0;
 	std::string _mediaDir;
@@ -60,6 +64,7 @@ private:
 	std::string currentRsyncFile;
 	std::string lastFfmpegOutput;
 	std::string lastRsyncOutput;
+	std::string lastCopyOutput;
 
 	void _reflowDisksTree() const;
 	void _reflowShowsTree() const;
@@ -67,6 +72,7 @@ private:
 	void _reflowTaskList();
 	void _updateFfmpegStatus();
 	void _updateRsyncStatus();
+	void _updateCopyStatus();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _queueTask(std::string cmd);
 	void _queueTasks(std::vector<std::string> cmds);
@@ -114,6 +120,7 @@ extern "C" {
 	void delete_title(const char* id);
 	void undelete_title(const char* id);
 	void collect_garbage();
+	void copy_from_usb();
 
 	bool has_original_for_tv_episode(const char* id);
 	bool has_original_for_film_video(const char* id);

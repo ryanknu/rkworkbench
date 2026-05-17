@@ -37,6 +37,7 @@ pub enum IncomingRequest {
     MatchScan(FileBackedTitleId, String),
     FetchTmdbStill(MappableMediaId),
     FetchMkvInfo(String),
+    CopyFromUsb,
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -1847,4 +1848,88 @@ pub fn fetch_mkv_info(_media: &MediaState, path: String) -> Vec<UiEvent> {
     }
     
     vec![UiEvent::SetMkvTracks { tracks }]
+}
+
+pub fn copy_from_usb(media: &MediaState, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let m = unlock_media!(media);
+    let target_dir = m.media_dir.clone();
+    
+    let mut mounts = Vec::new();
+    // Common mount locations on Linux
+    for base in &["/media", "/run/media"] {
+        if let Ok(entries) = fs::read_dir(base) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_dir() {
+                    // Check if it's /media/user/label
+                    if let Ok(user_entries) = fs::read_dir(&path) {
+                        for user_entry in user_entries.filter_map(|e| e.ok()) {
+                            let user_path = user_entry.path();
+                            if user_path.is_dir() {
+                                mounts.push(user_path);
+                            }
+                        }
+                    }
+                    // Also check if it's /media/label directly
+                    mounts.push(path);
+                }
+            }
+        }
+    }
+    
+    mounts.sort();
+    mounts.dedup();
+
+    let mut files_to_copy = Vec::new();
+
+    for mount in &mounts {
+        for entry in WalkDir::new(mount).follow_links(true).into_iter().filter_map(|e| e.ok()) {
+            if entry.file_type().is_file() {
+                if entry.path().extension().map(|ext| ext.eq_ignore_ascii_case("mkv")).unwrap_or(false) {
+                    files_to_copy.push(entry.path().to_path_buf());
+                }
+            }
+        }
+    }
+    
+    files_to_copy.sort();
+    files_to_copy.dedup();
+
+    let mut copied_anything = false;
+
+    if files_to_copy.is_empty() {
+        on_progress(UiEvent::CopyOutput("No MKV files found on USB".to_string()));
+    }
+
+    for (idx, src_file) in files_to_copy.iter().enumerate() {
+        let file_name = src_file.file_name().unwrap();
+        let parent_name = src_file.parent().and_then(|p| p.file_name()).unwrap_or(file_name);
+        
+        let dest_folder = target_dir.join(parent_name);
+        let file_name_str = file_name.to_string_lossy();
+        
+        on_progress(UiEvent::CopyOutput(format!("Copying {}/{} ({})", idx + 1, files_to_copy.len(), file_name_str)));
+
+        if !dest_folder.exists() {
+            if let Err(e) = fs::create_dir_all(&dest_folder) {
+                println!("[rust] Failed to create dest dir {:?}: {:?}", dest_folder, e);
+                continue;
+            }
+        }
+        
+        let dest_file = dest_folder.join(file_name);
+        if let Err(e) = fs::copy(src_file, &dest_file) {
+            println!("[rust]   Failed to copy {:?} to {:?}: {:?}", src_file, dest_file, e);
+        } else {
+            copied_anything = true;
+        }
+    }
+
+    if copied_anything {
+        // Drop the lock before calling read_local_media because it also calls unlock_media!
+        drop(m);
+        return read_local_media(media);
+    }
+
+    vec![]
 }

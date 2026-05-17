@@ -8,6 +8,7 @@
 #include <QAudioOutput>
 #include <QProcess>
 #include <QPixmap>
+#include <QSettings>
 #include <fstream>
 #include <string>
 #include <format>
@@ -439,6 +440,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->setupUi(this);
     ui->ffmpegStatusWidget->setMinimumHeight(30);
     ui->rsyncStatusWidget->setMinimumHeight(30);
+    ui->copyStatusWidget->setMinimumHeight(30);
     ui->preprocessorCommand->setText("ffmpeg -hwaccel cuda -i ${in} -map 0 -c:v hevc_nvenc -preset p7 -rc vbr -cq 18 -pix_fmt p010le -c:a copy -c:s copy -c:d copy ${out}");
     connect(ui->preprocessorTemplates, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (index == 0) {
@@ -454,6 +456,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->remoteMovieLocation->setText("root@10.4.6.2:/mnt/user/emby/movies");
     ui->ffmpegStatusWidget->hide();
     ui->rsyncStatusWidget->hide();
+    ui->copyStatusWidget->hide();
     setMouseTrackingRecursive(this, true);
 
     ui->filmsTree->hide();
@@ -466,6 +469,7 @@ MainWindow::MainWindow(QWidget *parent)
         spinnerIndex = (spinnerIndex + 1) % 4;
         ui->spinnerLabel->setText(frames[spinnerIndex]);
         ui->rsyncSpinnerLabel->setText(frames[spinnerIndex]);
+        ui->copySpinnerLabel->setText(frames[spinnerIndex]);
     });
 
     // Spin up background thread
@@ -914,6 +918,12 @@ MainWindow::MainWindow(QWidget *parent)
         collect_garbage();
     });
 
+    connect(ui->copyUsbBtn, &QPushButton::clicked, [&]() {
+        copy_from_usb();
+        this->copyQueueCount++;
+        this->_updateCopyStatus();
+    });
+
     connect(ui->restoreBtn, &QPushButton::clicked, [&]() {
         initial_load();
     });
@@ -946,11 +956,23 @@ MainWindow::MainWindow(QWidget *parent)
         ui->showsTree->model()->removeRows(0, ui->showsTree->model()->rowCount());
         ui->filmsTree->model()->removeRows(0, ui->filmsTree->model()->rowCount());
     }, Qt::QueuedConnection);
+
+    QSettings settings;
+    restoreGeometry(settings.value("geometry").toByteArray());
+    restoreState(settings.value("windowState").toByteArray());
 }
 
 MainWindow::~MainWindow()
 {
     delete ui;
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    QSettings settings;
+    settings.setValue("geometry", saveGeometry());
+    settings.setValue("windowState", saveState());
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::mouseReleaseEvent(QMouseEvent *event)
@@ -1007,17 +1029,17 @@ void MainWindow::_updateFfmpegStatus() {
                 : std::format("{}: {} | {} ({} in queue)", prefix, currentEncodingFile, lastFfmpegOutput, ffmpegQueueCount);
             ui->statusLabel->setText(q(status));
         } else if (ffmpegQueueCount > 0) {
-            if (rsyncActiveCount == 0) spinnerTimer->stop();
+            if (rsyncActiveCount == 0 && copyActiveCount == 0) spinnerTimer->stop();
             ui->spinnerLabel->setText("-");
             ui->statusLabel->setText(q(std::format("Waiting: {} jobs in queue", ffmpegQueueCount)));
         } else {
-            if (rsyncActiveCount == 0) spinnerTimer->stop();
+            if (rsyncActiveCount == 0 && copyActiveCount == 0) spinnerTimer->stop();
             ui->spinnerLabel->setText("!");
             ui->statusLabel->setText(q(lastFfmpegOutput));
         }
     } else {
         ui->ffmpegStatusWidget->hide();
-        if (rsyncActiveCount == 0) spinnerTimer->stop();
+        if (rsyncActiveCount == 0 && copyActiveCount == 0) spinnerTimer->stop();
     }
 }
 
@@ -1032,17 +1054,42 @@ void MainWindow::_updateRsyncStatus() {
                 : std::format("rsync: {} | {} ({} in queue)", currentRsyncFile, lastRsyncOutput, rsyncQueueCount);
             ui->rsyncStatusLabel->setText(q(status));
         } else if (rsyncQueueCount > 0) {
-            if (ffmpegActiveCount == 0) spinnerTimer->stop();
+            if (ffmpegActiveCount == 0 && copyActiveCount == 0) spinnerTimer->stop();
             ui->rsyncSpinnerLabel->setText("-");
             ui->rsyncStatusLabel->setText(q(std::format("Waiting: {} rsync jobs in queue", rsyncQueueCount)));
         } else {
-            if (ffmpegActiveCount == 0) spinnerTimer->stop();
+            if (ffmpegActiveCount == 0 && copyActiveCount == 0) spinnerTimer->stop();
             ui->rsyncSpinnerLabel->setText("!");
             ui->rsyncStatusLabel->setText(q(lastRsyncOutput));
         }
     } else {
         ui->rsyncStatusWidget->hide();
-        if (ffmpegActiveCount == 0) spinnerTimer->stop();
+        if (ffmpegActiveCount == 0 && copyActiveCount == 0) spinnerTimer->stop();
+    }
+}
+
+void MainWindow::_updateCopyStatus() {
+    qDebug() << "_updateCopyStatus: active=" << copyActiveCount << "queue=" << copyQueueCount << "output=" << q(lastCopyOutput);
+    if (copyActiveCount > 0 || copyQueueCount > 0 || lastCopyOutput.starts_with("Error:")) {
+        ui->copyStatusWidget->show();
+        if (copyActiveCount > 0) {
+            spinnerTimer->start(250);
+            auto status = lastCopyOutput.empty()
+                ? std::string("Copying from USB...")
+                : std::format("Copy: {}", lastCopyOutput);
+            ui->copyStatusLabel->setText(q(status));
+        } else if (copyQueueCount > 0) {
+            if (ffmpegActiveCount == 0 && rsyncActiveCount == 0) spinnerTimer->stop();
+            ui->copySpinnerLabel->setText("-");
+            ui->copyStatusLabel->setText(q(std::format("Waiting: {} copy jobs in queue", copyQueueCount)));
+        } else {
+            if (ffmpegActiveCount == 0 && rsyncActiveCount == 0) spinnerTimer->stop();
+            ui->copySpinnerLabel->setText("!");
+            ui->copyStatusLabel->setText(q(lastCopyOutput));
+        }
+    } else {
+        ui->copyStatusWidget->hide();
+        if (ffmpegActiveCount == 0 && rsyncActiveCount == 0) spinnerTimer->stop();
     }
 }
 
@@ -1179,6 +1226,12 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
             }
+            if (req == "CopyFromUsb") {
+                lastCopyOutput = "";
+                copyQueueCount = std::max(0, copyQueueCount - 1);
+                copyActiveCount++;
+                _updateCopyStatus();
+            }
         }
     } catch (...) {}
 
@@ -1205,6 +1258,15 @@ void MainWindow::processMessage(std::string message) {
                 }
                 _updateRsyncStatus();
             }
+            if (req == "CopyFromUsb") {
+                copyActiveCount = std::max(0, copyActiveCount - 1);
+                if (copyActiveCount == 0) {
+                    if (!lastCopyOutput.starts_with("Error:")) {
+                        lastCopyOutput = "";
+                    }
+                }
+                _updateCopyStatus();
+            }
         }
     } catch (...) {}
 
@@ -1212,6 +1274,10 @@ void MainWindow::processMessage(std::string message) {
         if (m.contains("RsyncOutput")) {
             lastRsyncOutput = m["RsyncOutput"].get<std::string>();
             _updateRsyncStatus();
+        }
+        if (m.contains("CopyOutput")) {
+            lastCopyOutput = m["CopyOutput"].get<std::string>();
+            _updateCopyStatus();
         }
     } catch (...) {}
 

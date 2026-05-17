@@ -115,6 +115,7 @@ impl MediaState {
 
     pub fn load_confirmed_plays(&self) {
         let plays_file = self.config_dir.join("plays.txt");
+        self.confirmed_plays.borrow_mut().clear();
         if plays_file.exists() {
             if let Ok(content) = std::fs::read_to_string(&plays_file) {
                 let mut confirmed = self.confirmed_plays.borrow_mut();
@@ -355,6 +356,10 @@ impl MediaState {
 
     pub fn read_local_media(&self) {
         self.file_backed_titles.borrow_mut().clear();
+        self.films.borrow_mut().clear();
+        self.film_videos.borrow_mut().clear();
+        self.tv_shows.borrow_mut().clear();
+        self.tv_show_episodes.borrow_mut().clear();
         println!("[rust] scanning local media in {:?}", self.media_dir);
         for entry in WalkDir::new(&self.media_dir).into_iter().filter_map(|e| e.ok()) {
             if entry.path().is_dir() {

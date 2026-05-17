@@ -104,6 +104,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 MatchScan(id, command) => requests::match_scan(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
                 FetchTmdbStill(id) => requests::fetch_tmdb_still(&MEDIA, id),
                 FetchMkvInfo(path) => requests::fetch_mkv_info(&MEDIA, path),
+                CopyFromUsb => requests::copy_from_usb(&MEDIA, |e| push!(cb, ptrd, &e)),
                 _ => vec![],
             };
 
@@ -332,6 +333,12 @@ pub extern "C" fn fetch_mkv_info(path: *const c_char) {
     let path = cstr(path);
 
     SENDER.get().map(|s| s.lock().unwrap().send(FetchMkvInfo(path)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn copy_from_usb() {
+    println!("[rust] copy_from_usb called");
+    SENDER.get().map(|s| s.lock().unwrap().send(CopyFromUsb));
 }
 
 #[unsafe(no_mangle)]

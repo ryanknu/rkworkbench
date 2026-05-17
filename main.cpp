@@ -17,6 +17,8 @@ int main(int argc, char *argv[])
 
     // Initialize Qt
 	QApplication a(argc, argv);
+	a.setOrganizationName("ryan");
+	a.setApplicationName("rkworkbench");
 	MainWindow w;
 	w.setAppModel(gModel, mediaDir);
 	w.show();
