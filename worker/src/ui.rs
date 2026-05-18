@@ -78,6 +78,9 @@ pub enum UiEvent {
     SetMkvTracks {
         tracks: Vec<MkvTrack>,
     },
+    SetStitchList {
+        files: Vec<String>,
+    },
 }
 
 #[derive(Serialize)]

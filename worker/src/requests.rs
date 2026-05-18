@@ -20,6 +20,7 @@ pub enum IncomingRequest {
     MapMedia(FileBackedTitleId, MappableMediaId),
     PerformInitialLoad,
     RsyncRequest(String, String, String),
+    RsyncFromNasRequest(String, String, String),
     ConfirmPlay(MappableMediaId),
     DeleteTvShow(String),
     DeleteTvSeason(String, usize),
@@ -37,6 +38,11 @@ pub enum IncomingRequest {
     FetchTmdbStill(MappableMediaId),
     FetchMkvInfo(String),
     CopyFromUsb,
+    AddToStitch(String),
+    RemoveFromStitch(usize),
+    ReorderStitch(usize, usize),
+    ClearStitch,
+    PerformStitch,
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -396,6 +402,81 @@ pub fn rsync_show(media: &MediaState, id: String, tv_loc: String, movie_loc: Str
         }
         Err(e) => {
             println!("[rust] failed to execute rsync: {:?}", e);
+            on_progress(UiEvent::RsyncOutput(format!("Error: failed to execute rsync: {:?}", e)));
+        }
+    }
+
+    vec![]
+}
+
+pub fn rsync_from_nas(media: &MediaState, id: String, tv_loc: String, movie_loc: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let raw_id = strip_id_prefix(&id);
+    let (folder_name, source, destination) = {
+        let media = unlock_media!(media);
+
+        let (folder_name, remote_base) = if let Some(show) = media.get_show_by_id(&TvShowId(raw_id.clone())) {
+            (show.show_key.clone(), tv_loc)
+        } else if let Some(film) = media.get_film_by_id(&FilmId(raw_id.clone())) {
+            (film.film_key().to_owned(), movie_loc)
+        } else {
+            println!("Media not found for rsync from nas: {:?}", raw_id);
+            return vec![];
+        };
+
+        // Ensure trailing slash is handled for remote_base
+        let remote_base = if remote_base.ends_with('/') {
+            remote_base
+        } else {
+            format!("{}/", remote_base)
+        };
+
+        let source = format!("{}{}/", remote_base, folder_name);
+        let destination = media.media_dir.join("output").join(&folder_name);
+
+        (folder_name, source, destination)
+    };
+
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).ok();
+    }
+
+    println!("[rust] rsyncing from nas {:?} to {:?}", source, destination);
+
+    // Spawn rsync with --ignore-existing
+    let child_res = std::process::Command::new("rsync")
+        .arg("-aP")
+        .arg("--ignore-existing")
+        .arg(&source)
+        .arg(format!("{}/", destination.to_string_lossy()))
+        .stdout(Stdio::piped())
+        .spawn();
+
+    match child_res {
+        Ok(mut child) => {
+            if let Some(stdout) = child.stdout.take() {
+                handle_rsync_progress(stdout, &on_progress);
+            }
+
+            let status = child.wait();
+
+            match status {
+                Ok(s) if s.success() => {
+                    println!("[rust] rsync from nas successful for {}", folder_name);
+                    // After successful rsync, we want to reload local media so items turn green
+                    return read_local_media(media);
+                }
+                Ok(s) => {
+                    println!("[rust] rsync from nas failed for {} with status: {:?}", folder_name, s);
+                    on_progress(UiEvent::RsyncOutput(format!("Error: rsync exited with status {:?}", s)));
+                }
+                Err(e) => {
+                    println!("[rust] failed to wait for rsync from nas: {:?}", e);
+                    on_progress(UiEvent::RsyncOutput(format!("Error: failed to wait for rsync: {:?}", e)));
+                }
+            }
+        }
+        Err(e) => {
+            println!("[rust] failed to execute rsync from nas: {:?}", e);
             on_progress(UiEvent::RsyncOutput(format!("Error: failed to execute rsync: {:?}", e)));
         }
     }
@@ -2038,6 +2119,107 @@ pub fn copy_from_usb(media: &MediaState, on_progress: impl Fn(UiEvent)) -> Vec<U
         // Drop the lock before calling read_local_media because it also calls unlock_media!
         drop(m);
         return read_local_media(media);
+    }
+
+    vec![]
+}
+
+pub fn add_to_stitch(media: &MediaState, path: String) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    media.stitch_list.borrow_mut().push(path);
+    vec![UiEvent::SetStitchList { files: media.stitch_list.borrow().clone() }]
+}
+
+pub fn remove_from_stitch(media: &MediaState, index: usize) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut list = media.stitch_list.borrow_mut();
+    if index < list.len() {
+        list.remove(index);
+    }
+    vec![UiEvent::SetStitchList { files: list.clone() }]
+}
+
+pub fn reorder_stitch(media: &MediaState, from: usize, to: usize) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut list = media.stitch_list.borrow_mut();
+    if from < list.len() && to < list.len() {
+        let item = list.remove(from);
+        list.insert(to, item);
+    }
+    vec![UiEvent::SetStitchList { files: list.clone() }]
+}
+
+pub fn clear_stitch(media: &MediaState) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    media.stitch_list.borrow_mut().clear();
+    vec![UiEvent::SetStitchList { files: vec![] }]
+}
+
+pub fn perform_stitch(media: &MediaState, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let m = unlock_media!(media);
+    let list = m.stitch_list.borrow().clone();
+    if list.is_empty() {
+        return vec![];
+    }
+
+    let mut out_dir = m.media_dir.clone();
+    out_dir.push("Lost & Found");
+    if !out_dir.exists() {
+        fs::create_dir_all(&out_dir).ok();
+    }
+
+    // Find the first available "Stitch N.mkv"
+    let mut n = 1;
+    let mut output_path;
+    loop {
+        output_path = out_dir.clone();
+        output_path.push(format!("Stitch {}.mkv", n));
+        if !output_path.exists() {
+            break;
+        }
+        n += 1;
+    }
+
+    // Clear the stitch list after starting
+    m.stitch_list.borrow_mut().clear();
+    on_progress(UiEvent::SetStitchList { files: vec![] });
+
+    // mkvmerge -o "output.mkv" "file1.mkv" + "file2.mkv" + "file3.mkv"
+    let mut cmd = std::process::Command::new("mkvmerge");
+    cmd.arg("-o").arg(&output_path);
+    for (i, file) in list.iter().enumerate() {
+        if i > 0 {
+            cmd.arg("+");
+        }
+        cmd.arg(file);
+    }
+
+    println!("[rust] Executing stitch: {:?}", cmd);
+    on_progress(UiEvent::FfmpegOutput(format!("Stitching to {}", output_path.file_name().unwrap().to_string_lossy())));
+
+    let status = cmd.status();
+
+    match status {
+        Ok(s) if s.success() => {
+            println!("[rust] Stitch successful!");
+            // Rename files to .d
+            for file in list.iter() {
+                let new_path = format!("{}.d", file);
+                if let Err(e) = fs::rename(file, &new_path) {
+                    println!("[rust] Failed to rename {} to {}: {:?}", file, new_path, e);
+                }
+            }
+            
+            // Trigger refresh
+            drop(m);
+            return read_local_media(media);
+        }
+        Ok(s) => {
+            on_progress(UiEvent::FfmpegOutput(format!("Error: mkvmerge failed with status {:?}", s)));
+        }
+        Err(e) => {
+            on_progress(UiEvent::FfmpegOutput(format!("Error: failed to execute mkvmerge: {:?}", e)));
+        }
     }
 
     vec![]

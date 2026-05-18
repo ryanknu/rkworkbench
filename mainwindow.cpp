@@ -7,6 +7,7 @@
 #include <QAction>
 #include <QAudioOutput>
 #include <QProcess>
+#include <QInputDialog>
 #include <QPixmap>
 #include <QSettings>
 #include <fstream>
@@ -225,19 +226,6 @@ void MainWindow::_reflowTaskList()
     }
 }
 
-void MainWindow::_queueTask(std::string cmd)
-{
-    appModel->pushTask(cmd);
-    worker->addCommand(cmd);
-    _reflowTaskList();
-}
-
-void MainWindow::_queueTasks(std::vector<std::string> cmds)
-{
-    for (auto& cmd : cmds) {
-        _queueTask(cmd);
-    }
-}
 
 /**
  * Retrieves the ID of the selected item in the tree.
@@ -282,6 +270,37 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     _reflowShowsTree();
     _reflowTaskList();
     _reflowGcButton();
+    _reflowTaskList();
+
+    connect(ui->stitchBtn, &QPushButton::clicked, this, [this]() {
+        perform_stitch();
+        this->ffmpegQueueCount++;
+        this->_updateFfmpegStatus();
+    });
+
+    connect(ui->stitchList->model(), &QAbstractItemModel::rowsMoved, this, [this](const QModelIndex &, int start, int end, const QModelIndex &, int destination) {
+        int from = start;
+        int to = destination;
+        if (to > from) to--; // Adjust for internal move
+        reorder_stitch(from, to);
+    });
+
+    ui->stitchList->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui->stitchList, &QWidget::customContextMenuRequested, [this](const QPoint &pos) {
+        auto index = ui->stitchList->indexAt(pos);
+        QMenu menu;
+        if (index.isValid()) {
+            auto removeAction = menu.addAction("Remove");
+            connect(removeAction, &QAction::triggered, [index]() {
+                remove_from_stitch(index.row());
+            });
+        }
+        auto clearAction = menu.addAction("Clear All");
+        connect(clearAction, &QAction::triggered, []() {
+            clear_stitch();
+        });
+        menu.exec(ui->stitchList->viewport()->mapToGlobal(pos));
+    });
 
     ui->disksTree->setRootIsDecorated(false);
     ui->disksTree->setItemsExpandable(false);
@@ -354,6 +373,7 @@ MainWindow::MainWindow(QWidget *parent)
     ui->ffmpegStatusWidget->setMinimumHeight(30);
     ui->rsyncStatusWidget->setMinimumHeight(30);
     ui->copyStatusWidget->setMinimumHeight(30);
+    ui->stitchGroup->hide();
     ui->preprocessorCommand->setText("ffmpeg -hwaccel cuda -i ${in} -map 0 -c:v hevc_nvenc -preset p7 -rc vbr -cq 18 -pix_fmt p010le -c:a copy -c:s copy -c:d copy ${out}");
     connect(ui->preprocessorTemplates, &QComboBox::currentIndexChanged, this, [this](int index) {
         if (index == 0) {
@@ -472,6 +492,11 @@ MainWindow::MainWindow(QWidget *parent)
                     }
                 });
             }
+
+            QAction * addToStitchAction = menu.addAction(q("Add to Stitch"));
+            connect(addToStitchAction, &QAction::triggered, [path]() {
+                add_to_stitch(path.c_str());
+            });
         }
 
         QAction * deleteAction = menu.addAction(q("Delete Title"));
@@ -566,6 +591,7 @@ MainWindow::MainWindow(QWidget *parent)
         }
 
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
+        QAction * loadFromNasAction = menu.addAction(q("Load from NAS"));
         QAction * reencodeShowAction = menu.addAction(q("Re-encode Show (ffmpeg)"));
 
         if (episodeId.empty()) {
@@ -632,6 +658,14 @@ MainWindow::MainWindow(QWidget *parent)
             auto tvLoc = ui->remoteTvLocation->text().toStdString();
             auto movieLoc = ui->remoteMovieLocation->text().toStdString();
             rsync_show(showId.c_str(), tvLoc.c_str(), movieLoc.c_str());
+            this->rsyncQueueCount++;
+            this->_updateRsyncStatus();
+        });
+
+        connect(loadFromNasAction, &QAction::triggered, [this, showId]() {
+            auto tvLoc = ui->remoteTvLocation->text().toStdString();
+            auto movieLoc = ui->remoteMovieLocation->text().toStdString();
+            rsync_from_nas(showId.c_str(), tvLoc.c_str(), movieLoc.c_str());
             this->rsyncQueueCount++;
             this->_updateRsyncStatus();
         });
@@ -710,6 +744,7 @@ MainWindow::MainWindow(QWidget *parent)
         }
 
         QAction * uploadAction = menu.addAction(q("Upload Film (rsync)"));
+        QAction * loadFromNasAction = menu.addAction(q("Load from NAS"));
 
         std::string filmVideoId;
         if (index.parent().isValid()) {
@@ -768,6 +803,14 @@ MainWindow::MainWindow(QWidget *parent)
             auto tvLoc = ui->remoteTvLocation->text().toStdString();
             auto movieLoc = ui->remoteMovieLocation->text().toStdString();
             rsync_show(filmId.c_str(), tvLoc.c_str(), movieLoc.c_str());
+            this->rsyncQueueCount++;
+            this->_updateRsyncStatus();
+        });
+
+        connect(loadFromNasAction, &QAction::triggered, [this, filmId]() {
+            auto tvLoc = ui->remoteTvLocation->text().toStdString();
+            auto movieLoc = ui->remoteMovieLocation->text().toStdString();
+            rsync_from_nas(filmId.c_str(), tvLoc.c_str(), movieLoc.c_str());
             this->rsyncQueueCount++;
             this->_updateRsyncStatus();
         });
@@ -1104,9 +1147,10 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
             }
-            if (req.contains("RsyncRequest")) {
+            if (req.contains("RsyncRequest") || req.contains("RsyncFromNasRequest")) {
                 lastRsyncOutput = "";
-                auto args = req["RsyncRequest"];
+                std::string key = req.contains("RsyncRequest") ? "RsyncRequest" : "RsyncFromNasRequest";
+                auto args = req[key];
                 std::string id = args[0].get<std::string>();
                 currentRsyncFile = id;
                 rsyncQueueCount = std::max(0, rsyncQueueCount - 1);
@@ -1136,6 +1180,12 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
             }
+            if (req == "PerformStitch") {
+                currentEncodingFile = "Stitch Operation";
+                ffmpegQueueCount = std::max(0, ffmpegQueueCount - 1);
+                ffmpegActiveCount++;
+                _updateFfmpegStatus();
+            }
             if (req == "CopyFromUsb") {
                 lastCopyOutput = "";
                 copyQueueCount = std::max(0, copyQueueCount - 1);
@@ -1148,7 +1198,7 @@ void MainWindow::processMessage(std::string message) {
     try {
         if (m.contains("CommandCompleted")) {
             auto req = m["CommandCompleted"];
-            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest") || req.contains("MatchScan")) {
+            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest") || req.contains("MatchScan") || req == "PerformStitch") {
                 ffmpegActiveCount = std::max(0, ffmpegActiveCount - 1);
                 if (ffmpegActiveCount == 0) {
                     currentEncodingFile = "";
@@ -1158,7 +1208,7 @@ void MainWindow::processMessage(std::string message) {
                 }
                 _updateFfmpegStatus();
             }
-            if (req.contains("RsyncRequest")) {
+            if (req.contains("RsyncRequest") || req.contains("RsyncFromNasRequest")) {
                 rsyncActiveCount = std::max(0, rsyncActiveCount - 1);
                 if (rsyncActiveCount == 0) {
                     currentRsyncFile = "";
@@ -1363,6 +1413,20 @@ void MainWindow::processMessage(std::string message) {
 
         _removeTreeItemById(tree, id);
     } catch (...) {}
+
+    try {
+        if (m.contains("SetStitchList")) {
+            auto files = m["SetStitchList"]["files"].get<std::vector<std::string>>();
+            ui->stitchList->blockSignals(true);
+            ui->stitchList->clear();
+            for (const auto& file : files) {
+                ui->stitchList->addItem(q(file));
+            }
+            ui->stitchList->blockSignals(false);
+            ui->stitchGroup->setVisible(!files.empty());
+        }
+    } catch (...) {}
+
 
     try {
         auto garbageSize = m["ChangeGarbageSize"]["size"].get<std::uint64_t>();

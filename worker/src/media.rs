@@ -24,6 +24,7 @@ pub struct MediaState {
     pub(crate) tv_shows: RefCell<Vec<TvShow>>,
     pub(crate) tv_show_episodes: RefCell<Vec<TvShowEpisode>>,
     pub(crate) confirmed_plays: RefCell<HashSet<PathBuf>>,
+    pub(crate) stitch_list: RefCell<Vec<String>>,
 }
 
 impl Debug for MediaState {
@@ -110,6 +111,7 @@ impl MediaState {
             tv_shows: Default::default(),
             tv_show_episodes: Default::default(),
             confirmed_plays: Default::default(),
+            stitch_list: Default::default(),
         }
     }
 

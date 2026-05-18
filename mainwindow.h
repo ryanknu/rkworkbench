@@ -74,8 +74,6 @@ private:
 	void _updateRsyncStatus();
 	void _updateCopyStatus();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
-	void _queueTask(std::string cmd);
-	void _queueTasks(std::vector<std::string> cmds);
 	void _findVlc();
 	void _clearMetadataPanel();
 	void _loadInPlayer(QString path);
@@ -101,6 +99,7 @@ extern "C" {
 	void lookup_film(const char* id, const char* api_key);
 	void lookup_tv(const char* id, const char* api_key);
 	void rsync_show(const char* show_id, const char* tv_location, const char* movie_location);
+	void rsync_from_nas(const char* show_id, const char* tv_location, const char* movie_location);
 	void delete_tv_show(const char* show_id);
 	void delete_tv_season(const char* show_id, size_t season_number);
 	void delete_film(const char* film_id);
@@ -120,6 +119,11 @@ extern "C" {
 	void undelete_title(const char* id);
 	void collect_garbage();
 	void copy_from_usb();
+	void add_to_stitch(const char* path);
+	void remove_from_stitch(size_t index);
+	void reorder_stitch(size_t from, size_t to);
+	void clear_stitch();
+	void perform_stitch();
 
 	bool has_original_for_tv_episode(const char* id);
 	bool has_original_for_film_video(const char* id);

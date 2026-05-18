@@ -20,6 +20,7 @@ use crate::ui::UiEvent;
 
 static SENDER: OnceLock<Mutex<Sender<IncomingRequest>>> = OnceLock::new();
 static FFMPEG_SENDER: OnceLock<Mutex<Sender<IncomingRequest>>> = OnceLock::new();
+static RSYNC_SENDER: OnceLock<Mutex<Sender<IncomingRequest>>> = OnceLock::new();
 static MEDIA: OnceLock<Mutex<MediaState>> = OnceLock::new();
 
 // Recreate the C callback type in Rust
@@ -63,6 +64,9 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
     let (f_send, f_recv) = channel();
     FFMPEG_SENDER.set(Mutex::new(f_send)).unwrap();
 
+    let (r_send, r_recv) = channel();
+    RSYNC_SENDER.set(Mutex::new(r_send)).unwrap();
+
     // Initial set up
     let media_dir = cstr(media_dir);
     let path = PathBuf::from_str(&media_dir).unwrap();
@@ -88,7 +92,6 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 MapMedia(from, to) => requests::map_media(&MEDIA, from, to),
                 LookupFilm(tmdb_id, tmdb_api_key) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key),
                 LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
-                RsyncRequest(id, tv_loc, movie_loc) => requests::rsync_show(&MEDIA, id, tv_loc, movie_loc, |e| push!(cb, ptrd, &e)),
                 ConfirmPlay(id) => requests::confirm_play(&MEDIA, id),
                 DeleteTvShow(id) => requests::delete_tv_show(&MEDIA, id),
                 DeleteTvSeason(id, season) => requests::delete_tv_season(&MEDIA, id, season),
@@ -104,10 +107,39 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 FetchTmdbStill(id) => requests::fetch_tmdb_still(&MEDIA, id),
                 FetchMkvInfo(path) => requests::fetch_mkv_info(&MEDIA, path),
                 CopyFromUsb => requests::copy_from_usb(&MEDIA, |e| push!(cb, ptrd, &e)),
+                AddToStitch(path) => requests::add_to_stitch(&MEDIA, path),
+                RemoveFromStitch(index) => requests::remove_from_stitch(&MEDIA, index),
+                ReorderStitch(from, to) => requests::reorder_stitch(&MEDIA, from, to),
+                ClearStitch => requests::clear_stitch(&MEDIA),
                 _ => vec![],
             };
 
             // It'd be nice to send batches of up to ~20 messages in a JSON array.
+            for event in events {
+                push!(cb, ptrd, &event);
+            }
+
+            push!(cb, ptrd, &UiEvent::CommandCompleted(message));
+        }
+    });
+
+    // Spawn a new background thread for rsync requests
+    thread::spawn(move || {
+        loop {
+            let message = match r_recv.recv() {
+                Ok(message) => message,
+                Err(x) => panic!("Rsync receiver error. Background worker panic. RecvError: {:?}", x),
+            };
+
+            push!(cb, ptrd, &UiEvent::CommandStarted(message.clone()));
+
+            // Process `message`
+            let events = match message.clone() {
+                RsyncRequest(id, tv_loc, movie_loc) => requests::rsync_show(&MEDIA, id, tv_loc, movie_loc, |e| push!(cb, ptrd, &e)),
+                RsyncFromNasRequest(id, tv_loc, movie_loc) => requests::rsync_from_nas(&MEDIA, id, tv_loc, movie_loc, |e| push!(cb, ptrd, &e)),
+                _ => vec![],
+            };
+
             for event in events {
                 push!(cb, ptrd, &event);
             }
@@ -130,6 +162,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
             let events = match message.clone() {
                 ReencodeRequest(id, command) => requests::reencode_tv_episode(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
                 ReencodeFilmRequest(id, command) => requests::reencode_film_video(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
+                PerformStitch => requests::perform_stitch(&MEDIA, |e| push!(cb, ptrd, &e)),
                 _ => vec![],
             };
 
@@ -209,7 +242,18 @@ pub extern "C" fn rsync_show(show_id: *const c_char, tv_location: *const c_char,
     let tv_location = cstr(tv_location);
     let movie_location = cstr(movie_location);
 
-    SENDER.get().map(|s| s.lock().unwrap().send(RsyncRequest(show_id, tv_location, movie_location)));
+    RSYNC_SENDER.get().map(|s| s.lock().unwrap().send(RsyncRequest(show_id, tv_location, movie_location)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rsync_from_nas(show_id: *const c_char, tv_location: *const c_char, movie_location: *const c_char) {
+    println!("[rust] rsync_from_nas called");
+
+    let show_id = cstr(show_id);
+    let tv_location = cstr(tv_location);
+    let movie_location = cstr(movie_location);
+
+    RSYNC_SENDER.get().map(|s| s.lock().unwrap().send(RsyncFromNasRequest(show_id, tv_location, movie_location)));
 }
 
 #[unsafe(no_mangle)]
@@ -331,6 +375,32 @@ pub extern "C" fn fetch_mkv_info(path: *const c_char) {
 pub extern "C" fn copy_from_usb() {
     println!("[rust] copy_from_usb called");
     SENDER.get().map(|s| s.lock().unwrap().send(CopyFromUsb));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn add_to_stitch(path: *const c_char) {
+    let path = cstr(path);
+    SENDER.get().map(|s| s.lock().unwrap().send(AddToStitch(path)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn remove_from_stitch(index: usize) {
+    SENDER.get().map(|s| s.lock().unwrap().send(RemoveFromStitch(index)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn reorder_stitch(from: usize, to: usize) {
+    SENDER.get().map(|s| s.lock().unwrap().send(ReorderStitch(from, to)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn clear_stitch() {
+    SENDER.get().map(|s| s.lock().unwrap().send(ClearStitch));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn perform_stitch() {
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(PerformStitch));
 }
 
 #[unsafe(no_mangle)]

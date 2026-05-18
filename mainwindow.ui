@@ -408,6 +408,38 @@
            </widget>
           </item>
           <item>
+           <widget class="QGroupBox" name="stitchGroup">
+            <property name="visible">
+             <bool>false</bool>
+            </property>
+            <property name="title">
+             <string>Stitch List</string>
+            </property>
+            <layout class="QVBoxLayout" name="stitchLayout">
+             <item>
+              <widget class="QListWidget" name="stitchList">
+               <property name="dragEnabled">
+                <bool>true</bool>
+               </property>
+               <property name="dragDropMode">
+                <enum>QAbstractItemView::InternalMove</enum>
+               </property>
+               <property name="defaultDropAction">
+                <enum>Qt::TargetMoveAction</enum>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="stitchBtn">
+               <property name="text">
+                <string>Stitch</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </widget>
+          </item>
+          <item>
            <spacer name="metadataSpacer">
             <property name="orientation">
              <enum>Qt::Orientation::Vertical</enum>
