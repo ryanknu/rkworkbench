@@ -1,7 +1,6 @@
 #include <filesystem>
 #include <QMainWindow>
 #include <QStandardItemModel>
-#include <QStringListModel>
 #include <QPushButton>
 #include <QTreeView>
 #include <QAction>
@@ -9,7 +8,6 @@
 #include <QTimer>
 #include <QCloseEvent>
 #include "model.h"
-#include "commandworker.h"
 
 QT_BEGIN_NAMESPACE
 namespace Ui {
@@ -45,12 +43,12 @@ private:
 	Ui::MainWindow *ui;
 	std::filesystem::path configPath;
 	AppModel *appModel;
-	CommandWorker *worker;
 	QAudioOutput *audioOutput;
 	QMediaPlayer *player;
 
 	// UI State
-	int _mRequestedPlayerPosition = 0;
+	qint64 _mRequestedPlayerPosition = 0;
+	bool _mSeekPending = false;
 	int ffmpegQueueCount = 0;
 	int ffmpegActiveCount = 0;
 	int rsyncQueueCount = 0;
@@ -59,6 +57,8 @@ private:
 	int copyActiveCount = 0;
 	QTimer *spinnerTimer = nullptr;
 	int spinnerIndex = 0;
+	QTimer *usbStatusTimer = nullptr;
+	bool _mUsbPresent = false;
 	std::string _mediaDir;
 	std::string currentEncodingFile;
 	std::string currentRsyncFile;
@@ -66,13 +66,10 @@ private:
 	std::string lastRsyncOutput;
 	std::string lastCopyOutput;
 
-	void _reflowDisksTree() const;
-	void _reflowShowsTree() const;
-	void _reflowGcButton() const;
-	void _reflowTaskList();
 	void _updateFfmpegStatus();
 	void _updateRsyncStatus();
 	void _updateCopyStatus();
+	void _updateUsbStatus();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _findVlc();
 	void _clearMetadataPanel();
@@ -96,10 +93,14 @@ extern "C" {
 
 	// Commands that the worker thread can work.
 	void initial_load();
+	void file_inventory();
 	void lookup_film(const char* id, const char* api_key);
 	void lookup_tv(const char* id, const char* api_key);
 	void rsync_show(const char* show_id, const char* tv_location, const char* movie_location);
 	void rsync_from_nas(const char* show_id, const char* tv_location, const char* movie_location);
+	void portable_encode(const char* id);
+	bool has_portable_for_tv_episode(const char* id);
+	bool has_portable_for_film_video(const char* id);
 	void delete_tv_show(const char* show_id);
 	void delete_tv_season(const char* show_id, size_t season_number);
 	void delete_film(const char* film_id);
@@ -118,7 +119,8 @@ extern "C" {
 	void delete_title(const char* id);
 	void undelete_title(const char* id);
 	void collect_garbage();
-	void copy_from_usb();
+	void copy_from_usb(bool delete_source);
+	const char* usb_status();
 	void add_to_stitch(const char* path);
 	void remove_from_stitch(size_t index);
 	void reorder_stitch(size_t from, size_t to);

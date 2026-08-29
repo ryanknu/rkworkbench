@@ -24,6 +24,7 @@ pub struct MediaState {
     pub(crate) tv_shows: RefCell<Vec<TvShow>>,
     pub(crate) tv_show_episodes: RefCell<Vec<TvShowEpisode>>,
     pub(crate) confirmed_plays: RefCell<HashSet<PathBuf>>,
+    pub(crate) rsynced_paths: RefCell<HashSet<PathBuf>>,
     pub(crate) stitch_list: RefCell<Vec<String>>,
 }
 
@@ -111,6 +112,7 @@ impl MediaState {
             tv_shows: Default::default(),
             tv_show_episodes: Default::default(),
             confirmed_plays: Default::default(),
+            rsynced_paths: Default::default(),
             stitch_list: Default::default(),
         }
     }
@@ -125,6 +127,24 @@ impl MediaState {
                     let path = PathBuf::from(line.trim());
                     if !path.as_os_str().is_empty() {
                         confirmed.insert(path);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Loads the set of files known to have been successfully rsynced to a remote
+    /// server, from the append-only log written by `rsync_show`.
+    pub fn load_rsynced_paths(&self) {
+        let log_file = self.config_dir.join("rsynced_files.txt");
+        self.rsynced_paths.borrow_mut().clear();
+        if log_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(&log_file) {
+                let mut rsynced = self.rsynced_paths.borrow_mut();
+                for line in content.lines() {
+                    let path = PathBuf::from(line.trim());
+                    if !path.as_os_str().is_empty() {
+                        rsynced.insert(path);
                     }
                 }
             }
@@ -506,10 +526,42 @@ impl MediaState {
         false
     }
 
+    pub fn has_portable(&self, id: &MappableMediaId) -> bool {
+        let titles = self.file_backed_titles.borrow();
+        // Construct the expected portable filename based on the mapped title's path
+        if let Some(tid) = self.get_title_id_for_mappable(id) {
+            if let Some(title) = titles.iter().find(|t| t.id == tid && self.is_in_output_dir(&t.path)) {
+                let file_stem = title.path.file_stem().unwrap().to_string_lossy();
+                let portable_path = title.path.with_file_name(format!("{} - Portable.mkv", file_stem));
+                return portable_path.exists();
+            }
+        }
+        false
+    }
+
     pub fn get_on_disk_file_size(&self, id: &MappableMediaId) -> Option<u64> {
         let titles = self.file_backed_titles.borrow();
         self.get_title_id_for_mappable(id).and_then(|tid| {
             titles.iter().find(|t| t.id == tid && self.is_in_output_dir(&t.path)).map(|t| t.file_size)
+        })
+    }
+
+    /// Total disk footprint for a mapped item: the encoded file in `output/` plus its
+    /// pre-encode backup in `originals/`, if one is still kept around.
+    pub fn get_total_disk_file_size(&self, id: &MappableMediaId) -> Option<u64> {
+        let titles = self.file_backed_titles.borrow();
+        self.get_title_id_for_mappable(id).and_then(|tid| {
+            titles.iter().find(|t| t.id == tid && self.is_in_output_dir(&t.path)).map(|t| {
+                let mut total = t.file_size;
+                let out_dir = self.media_dir.join("output");
+                if let Ok(rel) = t.path.strip_prefix(&out_dir) {
+                    let original_path = self.media_dir.join("originals").join(rel);
+                    if let Ok(meta) = std::fs::metadata(&original_path) {
+                        total += meta.len();
+                    }
+                }
+                total
+            })
         })
     }
 
@@ -723,22 +775,32 @@ impl FileBackedTitle {
         self.file_size
     }
 
-    pub fn marked_for_deletion(&self, confirmed_plays: &HashSet<PathBuf>, media_dir: &Path) -> bool {
-        if self.file_name.contains(".d") || confirmed_plays.contains(&self.path) {
+    /// A file is garbage once it's a `.d`-marked leftover, or once the encoded copy it
+    /// corresponds to (itself, if this *is* the encoded copy, or its `output/`
+    /// counterpart, if this is an `originals/` backup) has both a confirmed play and a
+    /// logged successful rsync. Requiring the rsync log, not just the confirmed play,
+    /// means a title verified locally but never actually uploaded won't be wiped out
+    /// with no remaining copy anywhere.
+    pub fn marked_for_deletion(&self, confirmed_plays: &HashSet<PathBuf>, rsynced_paths: &HashSet<PathBuf>, media_dir: &Path) -> bool {
+        if self.file_name.contains(".d") {
             return true;
         }
 
         let originals_dir = media_dir.join("originals");
         let output_dir = media_dir.join("output");
-        if self.path.starts_with(&originals_dir) {
-            if let Ok(rel) = self.path.strip_prefix(&originals_dir) {
-                let counterpart = output_dir.join(rel);
-                if confirmed_plays.contains(&counterpart) {
-                    return true;
-                }
-            }
+
+        let output_path = if self.path.starts_with(&output_dir) {
+            Some(self.path.clone())
+        } else if self.path.starts_with(&originals_dir) {
+            self.path.strip_prefix(&originals_dir).ok().map(|rel| output_dir.join(rel))
+        } else {
+            None
+        };
+
+        match output_path {
+            Some(output_path) => confirmed_plays.contains(&output_path) && rsynced_paths.contains(&output_path),
+            None => false,
         }
-        false
     }
 
     pub fn is_mapped(&self) -> bool {

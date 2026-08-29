@@ -1,55 +1,21 @@
 #include "model.h"
 #include <filesystem>
 #include <fstream>
-#include <algorithm>
-#include <set>
-#include <QDebug>
-#include <nlohmann/json.hpp>
-#include <regex>
+#include <sstream>
 #include <utility>
 
 namespace fs = std::filesystem;
-using json = nlohmann::json;
-
-std::atomic<std::uint64_t> RippedTitle::_mIdSequence = {1};
 
 AppModel::AppModel(std::string outDir)
 {
     // Defaults
     _mTmdbMode = TV;
-    _mPreprocessorCommand = "";
-    _mTmdbApiKey = "";
 
     // Set up config directory
     auto home = getenv("HOME");
     _mHomeDirPath = fs::path(home);
 	_mConfigDirPath = _mHomeDirPath / ".config" / "rkworkbench";
     _readWorkingDir(outDir);
-
-	// Initialize
-	_createDirectories();
-	_readApiKey();
-}
-
-fs::path AppModel::configDirPath()
-{
-    return _mConfigDirPath;
-}
-
-fs::path AppModel::workingDirPath()
-{
-    return _mWorkingDirPath;
-}
-
-std::string AppModel::tmdbApiKey()
-{
-    return _mTmdbApiKey;
-}
-
-void AppModel::setTmdbApiKey(std::string apiKey)
-{
-    _mTmdbApiKey = std::move(apiKey);
-    _writeApiKey();
 }
 
 void AppModel::toggleTmdbMode()
@@ -59,43 +25,6 @@ void AppModel::toggleTmdbMode()
 
 std::string AppModel::tmdbMode() const {
     return _mTmdbMode == TV ? "TV" : "Film";
-}
-
-fs::path AppModel::tvDirectory() const {
-    return _mConfigDirPath / "tv";
-}
-
-fs::path AppModel::filmDirectory() const {
-    return _mConfigDirPath / "films";
-}
-
-fs::path AppModel::outputDirectory() const {
-    return _mWorkingDirPath / "output";
-}
-
-void AppModel::_createDirectories() const
-{
-   	fs::create_directories(tvDirectory());
-	fs::create_directories(filmDirectory());
-	fs::create_directories(outputDirectory());
-}
-
-void AppModel::_readApiKey()
-{
-    std::ifstream t(_mConfigDirPath / "tmdb.key");
-    std::stringstream buffer;
-    buffer << t.rdbuf();
-    _mTmdbApiKey = buffer.str();
-}
-
-void AppModel::_writeApiKey() const {
-    fs::path of = _mConfigDirPath / "tmdb.key";
-    std::ofstream output_file;
-    output_file.open(of);
-    if (output_file.is_open()) {
-        output_file << _mTmdbApiKey;
-        output_file.close();
-    }
 }
 
 /**
@@ -142,213 +71,6 @@ void AppModel::_writeWorkingDir() const {
         output_file << _mWorkingDirPath.string();
         output_file.close();
     }
-}
-
-/**
- * This method was written by an LLM
- */
-bool detectShowJson(const fs::path& p) {
-    // 1. Check extension is .json
-    if (p.extension() != ".json") return false;
-
-    // 2. Get filename without extension
-    std::string stem = p.stem().string();
-
-    // 3. Check if stem is not empty and consists only of digits
-    return !stem.empty() && std::ranges::all_of(stem, ::isdigit);
-}
-
-/**
- * This method was written by an LLM
- */
-bool detectSeasonJson(const fs::path& path) {
-    // Get the filename as a string
-    const std::string filename = path.filename().string();
-
-    // Regex breakdown:
-    // ^        : Start of string
-    // \d+      : One or more digits (first integer)
-    // -S       : Literal hyphen followed by capital S
-    // \d+      : One or more digits (second integer)
-    // \.json   : Literal dot followed by "json"
-    // $        : End of string
-    static const std::regex pattern(R"(^\d+-S\d+\.json$)");
-
-    return std::regex_match(filename, pattern);
-}
-
-Show::Show(std::string _id, int _number, std::string _title, std::string _originalTitle, std::filesystem::path _path)
-{
-    id = std::move(_id);
-    number = _number;
-    seasons = { };
-    title = std::move(_title);
-    originalTitle = std::move(_originalTitle);
-    path = _path;
-}
-
-void Show::pushSeason(int season)
-{
-    seasons.push_back(season);
-}
-
-Episode::Episode(std::string _id, int _season, int _number, std::string _showId, std::string _title, std::filesystem::path _seasonPath)
-{
-    id = std::move(_id);
-    season = _season;
-    number = _number;
-    showId = std::move(_showId);
-    title = std::move(_title);
-    seasonPath = _seasonPath;
-}
-
-std::vector<std::string> *AppModel::tasks()
-{
-    return &_mTasks;
-}
-
-std::vector<Show*> AppModel::shows()
-{
-    std::vector<Show*> ret;
-    for (const auto &val: _mShows | std::views::values) {
-        ret.push_back(val.get());
-    }
-    return ret;
-}
-
-std::vector<Episode*> AppModel::episodes()
-{
-    std::vector<Episode*> ret;
-    for (const auto &val: _mEpisodes | std::views::values) {
-        ret.push_back(val.get());
-    }
-    return ret;
-}
-
-std::vector<RippedTitle*> AppModel::titles()
-{
-    std::vector<RippedTitle*> ret;
-    for (const auto &val: _mTitles | std::views::values) {
-        ret.push_back(val.get());
-    }
-    return ret;
-}
-
-std::string Episode::seasonKey()
-{
-    return std::format("S{:02}E{:02}", season, number);
-}
-
-std::string Episode::friendlyTitle()
-{
-    return std::format("{} - {}", seasonKey(), title);
-}
-
-bool Episode::operator<(const Episode& other) const {
-    // TODO: Sort by show name first.
-    if (other.season == season) {
-        if (other.number == number) {
-            return std::strcoll(other.title.c_str(), title.c_str()) < 0;
-        }
-        return number < other.number;
-    }
-    return season < other.season;
-}
-
-bool RippedTitle::operator<(const RippedTitle& other) const {
-    if (_mDiskName == other._mDiskName) {
-        return std::strcoll(_mTitleName.c_str(), other._mTitleName.c_str()) < 0;
-    }
-    return std::strcoll(_mDiskName.c_str(), other._mDiskName.c_str()) < 0;
-}
-
-void AppModel::setPreprocessorCommand(std::string cmd)
-{
-    _mPreprocessorCommand = std::move(cmd);
-}
-
-
-RippedTitle::RippedTitle(fs::path path, std::uintmax_t size, std::string diskName, std::string titleName)
-{
-    id = std::format("title.{}", _mIdSequence.fetch_add(1));
-    _mPath = std::move(path);
-    _mSize = size;
-    _mDiskName = std::move(diskName);
-    _mTitleName = std::move(titleName);
-}
-
-std::string RippedTitle::diskName()
-{
-    return _mDiskName;
-}
-
-std::string RippedTitle::friendlyTitle()
-{
-    double gb = static_cast<double>(_mSize) / (1024.0 * 1024.0 * 1024.0);
-    std::stringstream ss;
-    ss << std::fixed << std::setprecision(1) << gb << "G";
-
-    return std::format("{} {}", ss.str(), _mTitleName);
-}
-
-void AppModel::pushTask(std::string task)
-{
-    _mTasks.push_back(task);
-    _mQueuedAndPendingJobs ++;
-}
-
-void AppModel::popTask()
-{
-    _mQueuedAndPendingJobs --;
-}
-
-fs::path RippedTitle::path()
-{
-    return _mPath;
-}
-
-uintmax_t RippedTitle::size() const
-{
-    return _mSize;
-}
-
-int AppModel::queuedAndPendingJobs()
-{
-    return _mQueuedAndPendingJobs;
-}
-
-bool AppModel::showHasLocalFile(std::string showName, std::string seasonKey)
-{
-    return _mLocalEpisodes.contains(std::format("{} {}", showName, seasonKey));
-}
-
-
-int AppModel::requestedPosition() {
-    return _mRequestedPosition;
-}
-
-Show& AppModel::showById(const std::string& id) {
-    return *_mShows.at(id);
-}
-
-Episode& AppModel::episodeById(const std::string& id) {
-    return *_mEpisodes.at(id);
-}
-
-RippedTitle& AppModel::titleById(const std::string& id) {
-    return *_mTitles.at(id);
-}
-
-bool AppModel::hasShow(const std::string& id) {
-    return _mShows.contains(id);
-}
-
-bool AppModel::hasEpisode(const std::string& id) {
-    return _mEpisodes.contains(id);
-}
-
-bool AppModel::hasTitle(const std::string& id) {
-    return _mTitles.contains(id);
 }
 
 void AppModel::resetDrag() {

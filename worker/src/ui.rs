@@ -116,8 +116,9 @@ enum Mode {
 /// Mapped media shouldn't appear in the media tree but rather a colored entry on the media tree.
 pub fn build_files_tree(state: &MediaState) -> Vec<UiEvent> {
     let confirmed = state.confirmed_plays.borrow();
+    let rsynced = state.rsynced_paths.borrow();
     state.file_backed_titles().iter().filter(|n| !n.is_mapped() && !state.is_in_originals_dir(n.path())).map(|file| {
-        let color = if file.marked_for_deletion(&confirmed, &state.media_dir) {
+        let color = if file.marked_for_deletion(&confirmed, &rsynced, &state.media_dir) {
             if file.file_name.contains(".d") {
                 "red".to_owned()
             } else {
@@ -208,11 +209,84 @@ pub fn build_films_tree(state: &MediaState) -> Vec<UiEvent> {
     }).collect()
 }
 
+/// Same as `build_tv_shows_tree`, but sorted by total on-disk footprint (encoded +
+/// original backup) descending, and labelled with that total instead of just the
+/// encoded size. Used by the "File Inventory" view to surface what's actually
+/// consuming disk space, since `originals/` backups are otherwise invisible.
+pub fn build_tv_shows_tree_by_disk_usage(state: &MediaState) -> Vec<UiEvent> {
+    let episodes = state.tv_show_episodes();
+    let mut items: Vec<_> = episodes.iter().map(|episode| {
+        let id = MappableMediaId::TvEpisode(episode.id.clone());
+        let size = state.get_total_disk_file_size(&id).unwrap_or(0);
+        (episode, id, size)
+    }).collect();
+    items.retain(|(_, _, size)| *size > 0);
+    items.sort_by(|a, b| b.2.cmp(&a.2));
+
+    items.into_iter().map(|(episode, id, size)| {
+        let text = format!("{} {} - {}", format_gib_size(size), episode.series_key(), episode.name());
+
+        let color = if state.is_confirmed_play(&id) {
+            "cyan".to_owned()
+        } else {
+            "green".to_owned()
+        };
+
+        UiEvent::AddTreeItem {
+            tree: Tree::TvShows,
+            item: TreeItem {
+                id: episode.id().to_owned(),
+                parent_id: Some(episode.show_id.0.clone()),
+                parent_text: episode.show_name.clone(),
+                text,
+                color,
+            },
+            after: None,
+        }
+    }).collect()
+}
+
+/// Same as `build_films_tree`, but sorted by total on-disk footprint descending. See
+/// `build_tv_shows_tree_by_disk_usage`.
+pub fn build_films_tree_by_disk_usage(state: &MediaState) -> Vec<UiEvent> {
+    let videos = state.film_videos();
+    let mut items: Vec<_> = videos.iter().map(|film| {
+        let id = MappableMediaId::FilmVideo(film.id.clone());
+        let size = state.get_total_disk_file_size(&id).unwrap_or(0);
+        (film, id, size)
+    }).collect();
+    items.retain(|(_, _, size)| *size > 0);
+    items.sort_by(|a, b| b.2.cmp(&a.2));
+
+    items.into_iter().map(|(film, id, size)| {
+        let text = format!("{} {}", format_gib_size(size), film.name());
+
+        let color = if state.is_confirmed_play(&id) {
+            "cyan".to_owned()
+        } else {
+            "green".to_owned()
+        };
+
+        UiEvent::AddTreeItem {
+            tree: Tree::Films,
+            item: TreeItem {
+                id: film.id().to_owned(),
+                parent_id: Some(film.film_id.0.clone()),
+                parent_text: film.film_name.clone(),
+                text,
+                color,
+            },
+            after: None,
+        }
+    }).collect()
+}
+
 pub fn get_garbage_size(state: &MediaState) -> UiEvent {
     let confirmed = state.confirmed_plays.borrow();
+    let rsynced = state.rsynced_paths.borrow();
     UiEvent::ChangeGarbageSize {
         size: state.file_backed_titles().iter()
-            .filter(|t| t.marked_for_deletion(&confirmed, &state.media_dir))
+            .filter(|t| t.marked_for_deletion(&confirmed, &rsynced, &state.media_dir))
             .fold(0u64, |t, a| t + a.size())
     }
 }

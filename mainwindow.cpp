@@ -1,8 +1,6 @@
-#include "commandworker.h"
 #include "mainwindow.h"
 #include "./ui_mainwindow.h"
 #include <QDebug>
-#include <QThread>
 #include <QMenu>
 #include <QAction>
 #include <QAudioOutput>
@@ -190,44 +188,6 @@ void MainWindow::_hideTmdbApiKeyInput() {
 }
 
 /**
- * Re-renders the disks tree from app model.
- */
-void MainWindow::_reflowDisksTree() const {}
-
-void MainWindow::_reflowShowsTree() const {}
-
-void MainWindow::_reflowGcButton() const {}
-
-void MainWindow::_reflowTaskList()
-{
-    // Get the model
-    auto* model = dynamic_cast<QStringListModel *>(ui->tasksList->model());
-    auto stringList = new QStringList();
-    int i = 0;
-    int t = appModel->queuedAndPendingJobs();
-    int c = appModel->tasks()->size();
-
-    for (auto& task : *appModel->tasks()) {
-        i++;
-        auto text = i < (c - t)
-            ? std::format("[DONE] {}", task)
-            : task;
-
-        stringList->append(q(text));
-    }
-
-    model->setStringList(*stringList);
-
-    if (appModel->tasks()->empty()) {
-        ui->tasksList->setMaximumHeight(0);
-    } else {
-        ui->tasksList->setMaximumHeight(200);
-        ui->tasksList->scrollToBottom();
-    }
-}
-
-
-/**
  * Retrieves the ID of the selected item in the tree.
  * Assumes the ID is set as the UserRole data on item in the data model.
  */
@@ -252,9 +212,6 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     // ui->tmdbApiKey->setText(q(appModel->tmdbApiKey()));
     ui->tmdbModeBtn->setText(q(appModel->tmdbMode()));
 
-    // Initialize task list model
-    ui->tasksList->setModel(new QStringListModel());
-
     // Initialize tree models
     auto* disksModel = new QStandardItemModel(this);
     auto* showsModel = new QStandardItemModel(this);
@@ -265,12 +222,6 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     ui->disksTree->setModel(disksModel);
     ui->showsTree->setModel(showsModel);
     ui->filmsTree->setModel(filmsModel);
-
-    _reflowDisksTree();
-    _reflowShowsTree();
-    _reflowTaskList();
-    _reflowGcButton();
-    _reflowTaskList();
 
     connect(ui->stitchBtn, &QPushButton::clicked, this, [this]() {
         perform_stitch();
@@ -305,63 +256,105 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
     ui->disksTree->setRootIsDecorated(false);
     ui->disksTree->setItemsExpandable(false);
 
-    auto handleTsSeek = [&](QTreeView* tree) {
+    auto handleTsSeek = [&](const QModelIndex &index) {
         _mRequestedPlayerPosition = 0;
-        ui->seekPos->setText("0");
-        auto text = tree->currentIndex().data(Qt::DisplayRole).toString().toStdString();
+        if (!index.isValid()) return;
+        auto text = index.data(Qt::DisplayRole).toString().toStdString();
         size_t tsPos = text.find("ts=");
         if (tsPos != std::string::npos) {
             size_t endPos = text.find("]", tsPos);
             if (endPos == std::string::npos) endPos = text.length();
             std::string tsStr = text.substr(tsPos + 3, endPos - (tsPos + 3));
             try {
-                uint64_t ts = std::stoull(tsStr);
-                _mRequestedPlayerPosition = ts;
+                _mRequestedPlayerPosition = std::stoll(tsStr);
             } catch (...) {}
         }
     };
 
     // When selecting an entry on the disks tree, load item in player.
-    connect(ui->disksTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &, const QItemSelection &) {
-        handleTsSeek(ui->disksTree);
-        auto titleId = _getIdForSelectedItemInTree(ui->disksTree);
-        auto fileName = get_filename_for_title_id(titleId.c_str());
-        if (!fileName) return;
-        std::string path(fileName);
-        free_string(fileName);
+    connect(ui->disksTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &selected, const QItemSelection &) {
+        if (!selected.indexes().isEmpty()) {
+            auto index = selected.indexes().first();
+            handleTsSeek(index);
+            _mSeekPending = true;
+            auto titleId = index.data(Qt::UserRole).toString().toStdString();
+            auto fileName = get_filename_for_title_id(titleId.c_str());
+            if (!fileName) return;
+            std::string path(fileName);
+            free_string(fileName);
 
-        _clearMetadataPanel();
-        fetch_mkv_info(path.c_str());
-        ui->metadataTitle->setText(q(path));
+            _clearMetadataPanel();
+            fetch_mkv_info(path.c_str());
+            ui->metadataTitle->setText(q(path));
 
-        _loadInPlayer(q(path));
-    });
-
-    connect(ui->showsTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &, const QItemSelection &) {
-        handleTsSeek(ui->showsTree);
-        auto id = _getIdForSelectedItemInTree(ui->showsTree);
-        _clearMetadataPanel();
-        if (!id.empty()) {
-            fetch_tmdb_still(id.c_str(), true);
-            auto fileName = get_filename_for_tv_episode_id(id.c_str());
-            if (fileName) {
-                fetch_mkv_info(fileName);
-                free_string(fileName);
-            }
+            _loadInPlayer(q(path));
+        } else {
+            _mRequestedPlayerPosition = 0;
+            _mSeekPending = true;
         }
     });
 
-    connect(ui->filmsTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &, const QItemSelection &) {
-        handleTsSeek(ui->filmsTree);
-        auto id = _getIdForSelectedItemInTree(ui->filmsTree);
-        _clearMetadataPanel();
-        if (!id.empty()) {
-            fetch_tmdb_still(id.c_str(), false);
-            auto fileName = get_filename_for_film_video_id(id.c_str());
-            if (fileName) {
-                fetch_mkv_info(fileName);
-                free_string(fileName);
+    connect(ui->showsTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &selected, const QItemSelection &) {
+        if (!selected.indexes().isEmpty()) {
+            auto index = selected.indexes().first();
+            handleTsSeek(index);
+            auto id = index.data(Qt::UserRole).toString().toStdString();
+            _clearMetadataPanel();
+            if (!id.empty()) {
+                fetch_tmdb_still(id.c_str(), true);
+                auto fileName = get_filename_for_tv_episode_id(id.c_str());
+                if (fileName) {
+                    _mSeekPending = true;
+                    fetch_mkv_info(fileName);
+                    _loadInPlayer(q(fileName));
+                    free_string(fileName);
+                } else {
+                    player->setPosition(_mRequestedPlayerPosition);
+                }
+                if (has_portable_for_tv_episode(id.c_str())) {
+                    ui->metadataPortable->setText("Portable version: Yes");
+                    ui->metadataPortable->setStyleSheet("color: green; font-weight: bold;");
+                } else {
+                    ui->metadataPortable->setText("Portable version: No");
+                    ui->metadataPortable->setStyleSheet("");
+                }
             }
+        } else {
+            _mRequestedPlayerPosition = 0;
+            _mSeekPending = true;
+            _clearMetadataPanel();
+        }
+    });
+
+    connect(ui->filmsTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &selected, const QItemSelection &) {
+        if (!selected.indexes().isEmpty()) {
+            auto index = selected.indexes().first();
+            handleTsSeek(index);
+            auto id = index.data(Qt::UserRole).toString().toStdString();
+            _clearMetadataPanel();
+            if (!id.empty()) {
+                fetch_tmdb_still(id.c_str(), false);
+                auto fileName = get_filename_for_film_video_id(id.c_str());
+                if (fileName) {
+                    _mSeekPending = true;
+                    fetch_mkv_info(fileName);
+                    _loadInPlayer(q(fileName));
+                    free_string(fileName);
+                } else {
+                    player->setPosition(_mRequestedPlayerPosition);
+                }
+                if (has_portable_for_film_video(id.c_str())) {
+                    ui->metadataPortable->setText("Portable version: Yes");
+                    ui->metadataPortable->setStyleSheet("color: green; font-weight: bold;");
+                } else {
+                    ui->metadataPortable->setText("Portable version: No");
+                    ui->metadataPortable->setStyleSheet("");
+                }
+            }
+        } else {
+            _mRequestedPlayerPosition = 0;
+            _mSeekPending = true;
+            _clearMetadataPanel();
         }
     });
 }
@@ -406,28 +399,37 @@ MainWindow::MainWindow(QWidget *parent)
         ui->copySpinnerLabel->setText(frames[spinnerIndex]);
     });
 
-    // Spin up background thread
-    worker = new CommandWorker();
-    auto *thread = new QThread();
-    worker->moveToThread(thread);
-    connect(thread, &QThread::started, worker, &CommandWorker::processQueue);
-    thread->start();
+    // USB device detection timer
+    usbStatusTimer = new QTimer(this);
+    connect(usbStatusTimer, &QTimer::timeout, this, [&]() {
+        _updateUsbStatus();
+    });
+    usbStatusTimer->start(2000);
+    _updateUsbStatus();
 
     // Connect media player
     audioOutput = new QAudioOutput;
     player = new QMediaPlayer;
     player->setVideoOutput(ui->videoWidget);
     player->setAudioOutput(audioOutput);
-    connect(player, &QMediaPlayer::durationChanged, [&](int v) {
+    connect(player, &QMediaPlayer::durationChanged, [&](qint64 v) {
         ui->videoSeek->setMaximum(v);
+        if (_mSeekPending && v > 0) {
+            _mSeekPending = false;
+            qint64 requested = _mRequestedPlayerPosition;
+            if (v > 15000 && requested > v - 10000) {
+                requested = v - 10000;
+            }
+            player->setPosition(requested);
+        }
     });
-    connect(player, &QMediaPlayer::positionChanged, [&](int v) {
+    connect(player, &QMediaPlayer::positionChanged, [&](qint64 v) {
         ui->videoSeek->setValue(v);
         ui->seekPos->setText(q(std::format("{}", v)));
     });
     connect(ui->videoSeek, &QSlider::sliderMoved, [&](int v) {
         player->setPosition(v);
-        ui->seekPos->setText(q(std::format("{}", v)));
+        ui->seekPos->setText(q(std::format("{}", (qint64)v)));
     });
     connect(ui->seekFwd, &QPushButton::clicked, [&] {
         auto pos = player->position();
@@ -440,16 +442,18 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Media player, when the content loads, skip to requested position.
     connect(player, &QMediaPlayer::mediaStatusChanged, [&](QMediaPlayer::MediaStatus status) {
-        if (status == QMediaPlayer::BufferedMedia) {
-            // Seek video to requested position. Do not allow seeking within 10 seconds of the end
-            // of the title, because QMediaPlayer will unload the video upon reaching the end and
-            // that can make the experience feel bizarre.
-            auto maximum = ui->videoSeek->maximum();
-            auto requested = _mRequestedPlayerPosition;
-            if (maximum > 15000 && requested > maximum - 10000) {
-                requested = maximum - 10000;
+        if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia) {
+            if (_mSeekPending) {
+                auto maximum = player->duration();
+                if (maximum > 0) {
+                    _mSeekPending = false;
+                    auto requested = _mRequestedPlayerPosition;
+                    if (maximum > 15000 && requested > maximum - 10000) {
+                        requested = maximum - 10000;
+                    }
+                    player->setPosition(requested);
+                }
             }
-            player->setPosition(requested);
         }
     });
 
@@ -593,6 +597,8 @@ MainWindow::MainWindow(QWidget *parent)
         QAction * uploadAction = menu.addAction(q("Upload Show (rsync)"));
         QAction * loadFromNasAction = menu.addAction(q("Load from NAS"));
         QAction * reencodeShowAction = menu.addAction(q("Re-encode Show (ffmpeg)"));
+        QAction * createPortableAction = menu.addAction(q("Create Portable Version"));
+        QAction * confirmShowAction = menu.addAction(q("Confirm Plays (Show)"));
 
         if (episodeId.empty()) {
             auto deleteMenu = menu.addMenu(q("Remove Metadata"));
@@ -670,6 +676,29 @@ MainWindow::MainWindow(QWidget *parent)
             this->_updateRsyncStatus();
         });
 
+        connect(createPortableAction, &QAction::triggered, [this, index]() {
+            auto* model = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
+            QModelIndex showIndex = index.parent().isValid() ? index.parent() : index;
+            int rows = model->rowCount(showIndex);
+            if (index.parent().isValid()) {
+                std::string epId = model->data(index, Qt::UserRole).toString().toStdString();
+                if (!epId.empty()) {
+                    portable_encode(epId.c_str());
+                    this->ffmpegQueueCount++;
+                }
+            } else {
+                for (int i = 0; i < rows; ++i) {
+                    QModelIndex epIndex = model->index(i, 0, showIndex);
+                    std::string epId = model->data(epIndex, Qt::UserRole).toString().toStdString();
+                    if (!epId.empty()) {
+                        portable_encode(epId.c_str());
+                        this->ffmpegQueueCount++;
+                    }
+                }
+            }
+            this->_updateFfmpegStatus();
+        });
+
         connect(reencodeShowAction, &QAction::triggered, [this, index]() {
             auto* model = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
             QModelIndex showIndex = index.parent().isValid() ? index.parent() : index;
@@ -684,6 +713,22 @@ MainWindow::MainWindow(QWidget *parent)
                 }
             }
             this->_updateFfmpegStatus();
+        });
+
+        connect(confirmShowAction, &QAction::triggered, [this, index]() {
+            auto* model = dynamic_cast<QStandardItemModel *>(ui->showsTree->model());
+            QModelIndex showIndex = index.parent().isValid() ? index.parent() : index;
+            int rows = model->rowCount(showIndex);
+            for (int i = 0; i < rows; ++i) {
+                QModelIndex epIndex = model->index(i, 0, showIndex);
+                QBrush brush = epIndex.data(Qt::ForegroundRole).value<QBrush>();
+                if (brush.color() != QColor("green")) continue;
+
+                std::string epId = model->data(epIndex, Qt::UserRole).toString().toStdString();
+                if (!epId.empty()) {
+                    confirm_tv_episode_plays(epId.c_str());
+                }
+            }
         });
 
         menu.exec(ui->showsTree->viewport()->mapToGlobal(pos));
@@ -745,6 +790,8 @@ MainWindow::MainWindow(QWidget *parent)
 
         QAction * uploadAction = menu.addAction(q("Upload Film (rsync)"));
         QAction * loadFromNasAction = menu.addAction(q("Load from NAS"));
+        QAction * createPortableAction = menu.addAction(q("Create Portable Version"));
+        QAction * confirmFilmAction = menu.addAction(q("Confirm Plays (Film)"));
 
         std::string filmVideoId;
         if (index.parent().isValid()) {
@@ -815,6 +862,45 @@ MainWindow::MainWindow(QWidget *parent)
             this->_updateRsyncStatus();
         });
 
+        connect(createPortableAction, &QAction::triggered, [this, index]() {
+            auto* model = dynamic_cast<QStandardItemModel *>(ui->filmsTree->model());
+            QModelIndex filmIndex = index.parent().isValid() ? index.parent() : index;
+            int rows = model->rowCount(filmIndex);
+            if (index.parent().isValid()) {
+                std::string videoId = model->data(index, Qt::UserRole).toString().toStdString();
+                if (!videoId.empty()) {
+                    portable_encode(videoId.c_str());
+                    this->ffmpegQueueCount++;
+                }
+            } else {
+                for (int i = 0; i < rows; ++i) {
+                    QModelIndex vIndex = model->index(i, 0, filmIndex);
+                    std::string vId = model->data(vIndex, Qt::UserRole).toString().toStdString();
+                    if (!vId.empty()) {
+                        portable_encode(vId.c_str());
+                        this->ffmpegQueueCount++;
+                    }
+                }
+            }
+            this->_updateFfmpegStatus();
+        });
+
+        connect(confirmFilmAction, &QAction::triggered, [this, index]() {
+            auto* model = dynamic_cast<QStandardItemModel *>(ui->filmsTree->model());
+            QModelIndex filmIndex = index.parent().isValid() ? index.parent() : index;
+            int rows = model->rowCount(filmIndex);
+            for (int i = 0; i < rows; ++i) {
+                QModelIndex vIndex = model->index(i, 0, filmIndex);
+                QBrush brush = vIndex.data(Qt::ForegroundRole).value<QBrush>();
+                if (brush.color() != QColor("green")) continue;
+
+                std::string vId = model->data(vIndex, Qt::UserRole).toString().toStdString();
+                if (!vId.empty()) {
+                    confirm_film_video_plays(vId.c_str());
+                }
+            }
+        });
+
         menu.exec(ui->filmsTree->viewport()->mapToGlobal(pos));
     });
 
@@ -872,7 +958,7 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->copyUsbBtn, &QPushButton::clicked, [&]() {
-        copy_from_usb();
+        copy_from_usb(ui->deleteUsbCheckbox->isChecked());
         this->copyQueueCount++;
         this->_updateCopyStatus();
     });
@@ -881,34 +967,9 @@ MainWindow::MainWindow(QWidget *parent)
         initial_load();
     });
 
-    connect(worker, &CommandWorker::commandCompleted, this, [&]() {
-        appModel->popTask();
-        _reflowTaskList();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::reflowAll, this, [&]() {
-        _reflowDisksTree();
-        _reflowShowsTree();
-        _reflowGcButton();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::reflowDisksTree, this, [&]() {
-        _reflowDisksTree();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::reflowShowsTree, this, [&]() {
-        _reflowShowsTree();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::reflowGcButton, this, [&]() {
-        _reflowGcButton();
-    }, Qt::QueuedConnection);
-
-    connect(worker, &CommandWorker::clearTrees, this, [&]() {
-        ui->disksTree->model()->removeRows(0, ui->disksTree->model()->rowCount());
-        ui->showsTree->model()->removeRows(0, ui->showsTree->model()->rowCount());
-        ui->filmsTree->model()->removeRows(0, ui->filmsTree->model()->rowCount());
-    }, Qt::QueuedConnection);
+    connect(ui->fileInventoryBtn, &QPushButton::clicked, [&]() {
+        file_inventory();
+    });
 
     QSettings settings;
     restoreGeometry(settings.value("geometry").toByteArray());
@@ -1023,13 +1084,17 @@ void MainWindow::_updateRsyncStatus() {
 
 void MainWindow::_updateCopyStatus() {
     qDebug() << "_updateCopyStatus: active=" << copyActiveCount << "queue=" << copyQueueCount << "output=" << q(lastCopyOutput);
+    ui->copyUsbBtn->setEnabled(_mUsbPresent && copyActiveCount == 0 && copyQueueCount == 0);
     if (copyActiveCount > 0 || copyQueueCount > 0 || lastCopyOutput.starts_with("Error:")) {
         ui->copyStatusWidget->show();
         if (copyActiveCount > 0) {
             spinnerTimer->start(250);
+            // "Copying ..." and "Deleting ..." are already self-describing; only
+            // prefix the generic ones (progress-less status lines, errors) with "Copy:".
+            bool selfDescribing = lastCopyOutput.starts_with("Copying") || lastCopyOutput.starts_with("Deleting");
             auto status = lastCopyOutput.empty()
                 ? std::string("Copying from USB...")
-                : std::format("Copy: {}", lastCopyOutput);
+                : (selfDescribing ? lastCopyOutput : std::format("Copy: {}", lastCopyOutput));
             ui->copyStatusLabel->setText(q(status));
         } else if (copyQueueCount > 0) {
             if (ffmpegActiveCount == 0 && rsyncActiveCount == 0) spinnerTimer->stop();
@@ -1043,6 +1108,48 @@ void MainWindow::_updateCopyStatus() {
     } else {
         ui->copyStatusWidget->hide();
         if (ffmpegActiveCount == 0 && rsyncActiveCount == 0) spinnerTimer->stop();
+    }
+}
+
+void MainWindow::_updateUsbStatus() {
+    // Don't poll while a copy is in flight; the source files are being read.
+    if (copyActiveCount > 0 || copyQueueCount > 0) {
+        return;
+    }
+
+    auto raw = usb_status();
+    if (!raw) {
+        return;
+    }
+    std::string statusJson(raw);
+    free_string(raw);
+
+    bool present = false;
+    std::string label;
+    int titleCount = 0;
+    double gb = 0.0;
+
+    try {
+        auto status = json::parse(statusJson);
+        present = status.value("present", false);
+        label = status.value("label", std::string());
+        titleCount = status.value("title_count", 0);
+        auto totalBytes = status.value("total_bytes", 0ULL);
+        gb = static_cast<double>(totalBytes) / (1024.0 * 1024.0 * 1024.0);
+    } catch (const json::exception& e) {
+        qDebug() << "Failed to parse usb_status response:" << q(statusJson) << q(e.what());
+        return;
+    }
+
+    _mUsbPresent = present;
+    ui->copyUsbBtn->setEnabled(present && titleCount > 0);
+
+    if (!present) {
+        ui->usbStatusLabel->setText(q("No USB detected"));
+    } else if (titleCount == 0) {
+        ui->usbStatusLabel->setText(q(std::format("USB detected ({}): no MKV titles found", label)));
+    } else {
+        ui->usbStatusLabel->setText(q(std::format("USB detected ({}): {} title(s), {:.1f}G", label, titleCount, gb)));
     }
 }
 
@@ -1089,6 +1196,7 @@ void MainWindow::_clearMetadataPanel() {
     ui->metadataDate->clear();
     ui->metadataLanguage->clear();
     ui->metadataRuntime->clear();
+    ui->metadataPortable->clear();
     ui->metadataOverview->clear();
     ui->tracksGroup->hide();
     
@@ -1105,9 +1213,6 @@ void MainWindow::_loadInPlayer(QString path) {
     player->stop();
     player->setSource(QUrl::fromLocalFile(path));
     player->setPlaybackRate(1.0);
-    if (_mRequestedPlayerPosition > 0) {
-        player->setPosition(_mRequestedPlayerPosition);
-    }
     player->play();
     player->pause();
 }
@@ -1169,6 +1274,22 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
             }
+            if (req.contains("PortableEncodeRequest")) {
+                std::string id = req["PortableEncodeRequest"].is_array() ? req["PortableEncodeRequest"][0].get<std::string>() : req["PortableEncodeRequest"].get<std::string>();
+                auto fileName = get_filename_for_tv_episode_id(id.c_str());
+                if (!fileName) {
+                    fileName = get_filename_for_film_video_id(id.c_str());
+                }
+
+                if (fileName) {
+                    currentEncodingFile = std::string(fileName) + " (Portable)";
+                    free_string(fileName);
+                }
+
+                ffmpegQueueCount = std::max(0, ffmpegQueueCount - 1);
+                ffmpegActiveCount++;
+                _updateFfmpegStatus();
+            }
             if (req.contains("MatchScan")) {
                 std::string id = req["MatchScan"].is_array() ? req["MatchScan"][0].get<std::string>() : req["MatchScan"].get<std::string>();
                 auto fileName = get_filename_for_title_id(id.c_str());
@@ -1186,7 +1307,7 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
             }
-            if (req == "CopyFromUsb") {
+            if (req.contains("CopyFromUsb")) {
                 lastCopyOutput = "";
                 copyQueueCount = std::max(0, copyQueueCount - 1);
                 copyActiveCount++;
@@ -1198,7 +1319,7 @@ void MainWindow::processMessage(std::string message) {
     try {
         if (m.contains("CommandCompleted")) {
             auto req = m["CommandCompleted"];
-            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest") || req.contains("MatchScan") || req == "PerformStitch") {
+            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest") || req.contains("MatchScan") || req == "PerformStitch" || req.contains("PortableEncodeRequest")) {
                 ffmpegActiveCount = std::max(0, ffmpegActiveCount - 1);
                 if (ffmpegActiveCount == 0) {
                     currentEncodingFile = "";
@@ -1218,7 +1339,7 @@ void MainWindow::processMessage(std::string message) {
                 }
                 _updateRsyncStatus();
             }
-            if (req == "CopyFromUsb") {
+            if (req.contains("CopyFromUsb")) {
                 copyActiveCount = std::max(0, copyActiveCount - 1);
                 if (copyActiveCount == 0) {
                     if (!lastCopyOutput.starts_with("Error:")) {

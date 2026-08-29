@@ -13,7 +13,6 @@ UIC := f'{{QTTOOLS}}/uic'
 
 build:
     {{MOC}} mainwindow.h > moc_mainwindow.cpp
-    {{MOC}} commandworker.h > moc_commandworker.cpp
     {{UIC}} mainwindow.ui > ui_mainwindow.h
     cargo build --release --manifest-path=worker/Cargo.toml
     g++ *.cpp {{LIBS}} {{CFLAGS}} {{RUST_LIB}} {{OPTIONS}} -o {{EXE}}

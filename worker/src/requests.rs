@@ -1,10 +1,11 @@
 use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, FilmVideoId, MediaId, TvShow, TvShowEpisode, TvShowId, TvEpisodeId};
 use crate::tmdb::{TmdbItem, TmdbTvShow, TmdbTvShowSeason};
-use crate::ui::{build_files_tree, build_films_tree, build_tv_shows_tree, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, MatchResult, Tree, TreeItem, TreeItemChange::ChangeColor, UiEvent, MediaMetadata, MkvTrack};
+use crate::ui::{build_films_tree_by_disk_usage, build_files_tree, build_films_tree, build_tv_shows_tree, build_tv_shows_tree_by_disk_usage, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, MatchResult, Tree, TreeItem, TreeItemChange::ChangeColor, UiEvent, MediaMetadata, MkvTrack};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 use std::fs;
 use std::io::{BufReader, Read, Write};
+use std::path::PathBuf;
 use std::thread;
 use std::process::Stdio;
 use std::sync::{Mutex, OnceLock};
@@ -21,6 +22,7 @@ pub enum IncomingRequest {
     PerformInitialLoad,
     RsyncRequest(String, String, String),
     RsyncFromNasRequest(String, String, String),
+    PortableEncodeRequest(String),
     ConfirmPlay(MappableMediaId),
     DeleteTvShow(String),
     DeleteTvSeason(String, usize),
@@ -37,12 +39,13 @@ pub enum IncomingRequest {
     MatchScan(FileBackedTitleId, String),
     FetchTmdbStill(MappableMediaId),
     FetchMkvInfo(String),
-    CopyFromUsb,
+    CopyFromUsb(bool),
     AddToStitch(String),
     RemoveFromStitch(usize),
     ReorderStitch(usize, usize),
     ClearStitch,
     PerformStitch,
+    FileInventory,
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -125,6 +128,7 @@ pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
     let media = unlock_media!(media);
 
     media.load_confirmed_plays();
+    media.load_rsynced_paths();
 
     // This should be moved.
     media.read_local_media();
@@ -162,6 +166,20 @@ pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
         events.push(get_tmdb_key_event());
     }
 
+    events
+}
+
+/// Rebuilds the Shows/Films trees sorted by total on-disk footprint (encoded output
+/// plus any surviving `originals/` backup) descending, labelled with that total
+/// instead of the encoded-only size shown by the normal view.
+pub fn file_inventory(media: &MediaState) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+
+    let mut events = vec![UiEvent::ClearTrees];
+    events.extend(build_files_tree(&media));
+    events.extend(build_films_tree_by_disk_usage(&media));
+    events.extend(build_tv_shows_tree_by_disk_usage(&media));
+    events.push(get_garbage_size(&media));
     events
 }
 
@@ -364,6 +382,8 @@ pub fn rsync_show(media: &MediaState, id: String, tv_loc: String, movie_loc: Str
         .stdout(Stdio::piped())
         .spawn();
 
+    let mut events = Vec::new();
+
     match child_res {
         Ok(mut child) => {
             if let Some(stdout) = child.stdout.take() {
@@ -375,19 +395,27 @@ pub fn rsync_show(media: &MediaState, id: String, tv_loc: String, movie_loc: Str
             match status {
                 Ok(s) if s.success() => {
                     println!("[rust] rsync successful for {}", folder_name);
-                    // Log rsynced files
+                    // Log rsynced files, and record them in memory so garbage
+                    // collection can immediately see this show as uploaded.
                     let log_file = config_dir.join("rsynced_files.txt");
                     if let Ok(mut file) = std::fs::OpenOptions::new()
                         .create(true)
                         .append(true)
                         .open(log_file)
                     {
+                        let synced = unlock_media!(media);
+                        let mut rsynced_paths = synced.rsynced_paths.borrow_mut();
+
                         // We should log all files in the source directory
                         for entry in WalkDir::new(&source).into_iter().filter_map(|e| e.ok()) {
                             if entry.path().is_file() {
                                 let _ = writeln!(file, "{}", entry.path().to_string_lossy());
+                                rsynced_paths.insert(entry.path().to_owned());
                             }
                         }
+
+                        drop(rsynced_paths);
+                        events.push(get_garbage_size(&synced));
                     }
                 }
                 Ok(s) => {
@@ -406,7 +434,7 @@ pub fn rsync_show(media: &MediaState, id: String, tv_loc: String, movie_loc: Str
         }
     }
 
-    vec![]
+    events
 }
 
 pub fn rsync_from_nas(media: &MediaState, id: String, tv_loc: String, movie_loc: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
@@ -501,8 +529,9 @@ pub fn confirm_play(media: &MediaState, id: MappableMediaId) -> Vec<UiEvent> {
         // Update Files tree for any titles that are now marked for deletion (confirmed or its original)
         let titles = media.file_backed_titles.borrow();
         let confirmed = media.confirmed_plays.borrow();
+        let rsynced = media.rsynced_paths.borrow();
         for title in titles.iter() {
-            if !title.is_mapped() && title.marked_for_deletion(&confirmed, &media.media_dir) {
+            if !title.is_mapped() && title.marked_for_deletion(&confirmed, &rsynced, &media.media_dir) {
                 events.push(UiEvent::ChangeTreeItem {
                     tree: Tree::Files,
                     id: title.id.0.clone(),
@@ -731,6 +760,7 @@ pub fn unidentify_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent
 
         if let Some(title) = media.file_backed_titles.borrow().iter().find(|t| t.id == title_id) {
              let confirmed = media.confirmed_plays.borrow();
+             let rsynced = media.rsynced_paths.borrow();
              events.push(UiEvent::AddTreeItem {
                 tree: Tree::Files,
                 item: TreeItem {
@@ -738,7 +768,7 @@ pub fn unidentify_tv_episode(media: &MediaState, id: TvEpisodeId) -> Vec<UiEvent
                     parent_id: None,
                     parent_text: title.collection.clone(),
                     text: title.file_name.clone(),
-                    color: if title.marked_for_deletion(&confirmed, &media.media_dir) { "red".to_owned() } else { "Default".to_owned() },
+                    color: if title.marked_for_deletion(&confirmed, &rsynced, &media.media_dir) { "red".to_owned() } else { "Default".to_owned() },
                 },
                 after: None,
             });
@@ -1053,6 +1083,7 @@ pub fn unidentify_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent
 
         if let Some(title) = media.file_backed_titles.borrow().iter().find(|t| t.id == title_id) {
              let confirmed = media.confirmed_plays.borrow();
+             let rsynced = media.rsynced_paths.borrow();
              events.push(UiEvent::AddTreeItem {
                 tree: Tree::Files,
                 item: TreeItem {
@@ -1060,7 +1091,7 @@ pub fn unidentify_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent
                     parent_id: None,
                     parent_text: title.collection.clone(),
                     text: title.file_name.clone(),
-                    color: if title.marked_for_deletion(&confirmed, &media.media_dir) { "red".to_owned() } else { "Default".to_owned() },
+                    color: if title.marked_for_deletion(&confirmed, &rsynced, &media.media_dir) { "red".to_owned() } else { "Default".to_owned() },
                 },
                 after: None,
             });
@@ -1189,6 +1220,96 @@ pub fn reencode_film_video(media: &MediaState, id: FilmVideoId, command_str: Str
     let media = unlock_media!(media);
     let mut events = vec![get_garbage_size(&media)];
     events.extend(get_tree_change_action_for_mappable(&media, MappableMediaId::FilmVideo(id)));
+    events
+}
+
+pub fn portable_encode(media: &MediaState, id_str: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let raw_id = strip_id_prefix(&id_str);
+    let (input_path, output_path, mappable_id) = {
+        let media = unlock_media!(media);
+        
+        // Try TV Episode
+        let mut resolved = None;
+        if let Some(episode) = media.tv_show_episodes.borrow().iter().find(|e| e.id.0 == raw_id || e.id.0 == id_str) {
+            let mappable = MappableMediaId::TvEpisode(episode.id.clone());
+            if let Some(tid) = media.get_title_id_for_mappable(&mappable) {
+                 if let Some(path) = media.get_file_backed_title_path(&tid) {
+                     resolved = Some((path, mappable));
+                 }
+            }
+        }
+        
+        // Try Film Video
+        if resolved.is_none() {
+            if let Some(video) = media.film_videos.borrow().iter().find(|v| v.id.0 == raw_id || v.id.0 == id_str) {
+                let mappable = MappableMediaId::FilmVideo(video.id.clone());
+                if let Some(tid) = media.get_title_id_for_mappable(&mappable) {
+                    if let Some(path) = media.get_file_backed_title_path(&tid) {
+                        resolved = Some((path, mappable));
+                    }
+                }
+            }
+        }
+
+        let Some((input_path, mappable)) = resolved else {
+            println!("Media not found for portable encode: {:?}", raw_id);
+            return vec![];
+        };
+
+        let file_stem = input_path.file_stem().unwrap().to_string_lossy();
+        let output_path = input_path.with_file_name(format!("{} - Portable.mkv", file_stem));
+        
+        (input_path, output_path, mappable)
+    };
+
+    println!("[rust] portable encode from {:?} to {:?}", input_path, output_path);
+
+    let mut cmd = std::process::Command::new("ffmpeg");
+    cmd.arg("-i").arg(&input_path)
+       .arg("-c:v").arg("hevc_nvenc")
+       .arg("-preset").arg("slow")
+       .arg("-cq").arg("28")
+       .arg("-rc").arg("vbr")
+       .arg("-qmin").arg("24")
+       .arg("-qmax").arg("32")
+       .arg("-vf").arg("scale=1280:-2")
+       .arg("-c:a").arg("aac")
+       .arg("-ac").arg("2")
+       .arg("-b:a").arg("128k")
+       .arg("-stats")
+       .arg("-y")
+       .arg(&output_path);
+
+    let child_res = cmd.stderr(Stdio::piped()).spawn();
+
+    match child_res {
+        Ok(mut child) => {
+            if let Some(stderr) = child.stderr.take() {
+                handle_ffmpeg_progress(stderr, &on_progress);
+            }
+
+            let status = child.wait();
+
+            match status {
+                Ok(s) if s.success() => {
+                    println!("portable encode successful for {:?}", output_path);
+                }
+                Ok(s) => {
+                    println!("portable encode failed with status: {:?}", s);
+                }
+                Err(e) => {
+                    println!("failed to wait for portable encode: {:?}", e);
+                }
+            }
+        }
+        Err(e) => {
+            println!("failed to execute portable encode: {:?}", e);
+        }
+    }
+
+    let media = unlock_media!(media);
+    let mut events = vec![get_garbage_size(&media)];
+    events.extend(get_tree_change_action_for_mappable(&media, mappable_id));
     events
 }
 
@@ -1397,7 +1518,7 @@ pub fn match_scan(media: &MediaState, id: FileBackedTitleId, command_str: String
             cmd.arg("-c:v").arg(decoder);
         }
         cmd.arg("-hwaccel_output_format").arg("cuda");
-        vf = format!("setpts=PTS-STARTPTS,scale_cuda=32:32:force_original_aspect_ratio=increase,hwdownload,format=nv12,fps=10,crop=32:32,format=rgb24");
+        vf = format!("setpts=PTS-STARTPTS,scale_cuda=32:32:force_original_aspect_ratio=increase,hwdownload,format=nv12,fps=10,crop=32:32,setparams=colorspace=bt709:color_primaries=bt709:color_trc=bt709,format=rgb24");
     } else {
         cmd.arg("-hwaccel").arg("auto");
         vf = format!("setpts=PTS-STARTPTS,fps=10,scale=32:32:force_original_aspect_ratio=increase,crop=32:32,format=rgb24");
@@ -1703,9 +1824,10 @@ pub fn collect_garbage(media: &MediaState) -> Vec<UiEvent> {
 
     let to_delete = {
         let confirmed = media.confirmed_plays.borrow();
+        let rsynced = media.rsynced_paths.borrow();
         let titles = media.file_backed_titles.borrow();
         titles.iter()
-            .filter(|t| t.marked_for_deletion(&confirmed, &media.media_dir))
+            .filter(|t| t.marked_for_deletion(&confirmed, &rsynced, &media.media_dir))
             .map(|t| (t.id.clone(), t.path.clone()))
             .collect::<Vec<_>>()
     };
@@ -2040,12 +2162,11 @@ pub fn fetch_mkv_info(_media: &MediaState, path: String) -> Vec<UiEvent> {
     vec![UiEvent::SetMkvTracks { tracks }]
 }
 
-pub fn copy_from_usb(media: &MediaState, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
-    let m = unlock_media!(media);
-    let target_dir = m.media_dir.clone();
-    
+/// Finds likely removable-drive mount points under the common Linux automount
+/// locations (covers both `/media/<label>` and `/media/<user>/<label>` layouts,
+/// and their `/run/media` equivalents).
+fn find_usb_mounts() -> Vec<PathBuf> {
     let mut mounts = Vec::new();
-    // Common mount locations on Linux
     for base in &["/media", "/run/media"] {
         if let Ok(entries) = fs::read_dir(base) {
             for entry in entries.filter_map(|e| e.ok()) {
@@ -2066,24 +2187,83 @@ pub fn copy_from_usb(media: &MediaState, on_progress: impl Fn(UiEvent)) -> Vec<U
             }
         }
     }
-    
+
     mounts.sort();
     mounts.dedup();
 
-    let mut files_to_copy = Vec::new();
+    // /media/<user> is usually just the per-user autofs directory holding the real
+    // device mounts underneath it, not a mount point itself - but it still gets
+    // added above as a candidate. Drop any candidate that is an ancestor of
+    // another one, so the same device isn't scanned twice under two different
+    // "mount roots" (which would double-count titles and their sizes, and could
+    // even copy a root-level title to two different destinations).
+    let candidates = mounts.clone();
+    mounts.retain(|m| !candidates.iter().any(|other| other != m && other.starts_with(m)));
 
-    for mount in &mounts {
+    mounts
+}
+
+/// Finds every `.mkv` file under the given mounts, paired with the mount root it
+/// was found under (so callers can tell whether a title sits directly at the USB's
+/// root or under a disk-level subfolder).
+fn find_mkv_files_on_mounts(mounts: &[PathBuf]) -> Vec<(PathBuf, PathBuf)> {
+    let mut files = Vec::new();
+
+    for mount in mounts {
         for entry in WalkDir::new(mount).follow_links(true).into_iter().filter_map(|e| e.ok()) {
-            if entry.file_type().is_file() {
-                if entry.path().extension().map(|ext| ext.eq_ignore_ascii_case("mkv")).unwrap_or(false) {
-                    files_to_copy.push(entry.path().to_path_buf());
-                }
+            if entry.file_type().is_file() && entry.path().extension().map(|ext| ext.eq_ignore_ascii_case("mkv")).unwrap_or(false) {
+                files.push((mount.clone(), entry.path().to_path_buf()));
             }
         }
     }
-    
-    files_to_copy.sort();
-    files_to_copy.dedup();
+
+    files.sort();
+    files.dedup();
+    files
+}
+
+/// A snapshot of whatever's currently plugged in, used to drive the "Copy from USB"
+/// button's enabled state and give feedback before you even click it.
+#[derive(Serialize)]
+pub struct UsbStatus {
+    present: bool,
+    label: String,
+    title_count: usize,
+    total_bytes: u64,
+}
+
+pub fn usb_status() -> UsbStatus {
+    let mounts = find_usb_mounts();
+    let files = find_mkv_files_on_mounts(&mounts);
+    let total_bytes = files.iter()
+        .filter_map(|(_, f)| fs::metadata(f).ok())
+        .map(|m| m.len())
+        .sum();
+    let label = mounts.first()
+        .and_then(|m| m.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    UsbStatus {
+        present: !mounts.is_empty(),
+        label,
+        title_count: files.len(),
+        total_bytes,
+    }
+}
+
+pub fn copy_from_usb(media: &MediaState, delete_source: bool, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    // Only hold the lock long enough to read media_dir. The copy itself can take a
+    // long time, and several "fast" FFI calls (e.g. get_filename_for_title_id) lock
+    // this same mutex synchronously from the UI thread, so holding it across the
+    // whole copy would freeze the entire app the moment the user touches a tree.
+    let target_dir = {
+        let m = unlock_media!(media);
+        m.media_dir.clone()
+    };
+
+    let mounts = find_usb_mounts();
+    let files_to_copy = find_mkv_files_on_mounts(&mounts);
 
     let mut copied_anything = false;
 
@@ -2091,13 +2271,21 @@ pub fn copy_from_usb(media: &MediaState, on_progress: impl Fn(UiEvent)) -> Vec<U
         on_progress(UiEvent::CopyOutput("No MKV files found on USB".to_string()));
     }
 
-    for (idx, src_file) in files_to_copy.iter().enumerate() {
+    for (idx, (mount, src_file)) in files_to_copy.iter().enumerate() {
         let file_name = src_file.file_name().unwrap();
-        let parent_name = src_file.parent().and_then(|p| p.file_name()).unwrap_or(file_name);
-        
+
+        // A title sitting directly at the USB's root has no disk-level folder to
+        // group it under; give it its own folder (named after itself) instead of
+        // lumping every root-level title together under the USB's volume label.
+        let parent_name = if src_file.parent() == Some(mount.as_path()) {
+            src_file.file_stem().unwrap_or(file_name)
+        } else {
+            src_file.parent().and_then(|p| p.file_name()).unwrap_or(file_name)
+        };
+
         let dest_folder = target_dir.join(parent_name);
         let file_name_str = file_name.to_string_lossy();
-        
+
         on_progress(UiEvent::CopyOutput(format!("Copying {}/{} ({})", idx + 1, files_to_copy.len(), file_name_str)));
 
         if !dest_folder.exists() {
@@ -2106,18 +2294,36 @@ pub fn copy_from_usb(media: &MediaState, on_progress: impl Fn(UiEvent)) -> Vec<U
                 continue;
             }
         }
-        
+
         let dest_file = dest_folder.join(file_name);
-        if let Err(e) = fs::copy(src_file, &dest_file) {
-            println!("[rust]   Failed to copy {:?} to {:?}: {:?}", src_file, dest_file, e);
-        } else {
-            copied_anything = true;
+        match fs::copy(src_file, &dest_file) {
+            Ok(bytes_copied) => {
+                copied_anything = true;
+
+                if delete_source {
+                    // Verify the destination actually landed with the full byte
+                    // count before destroying the only other copy.
+                    let dest_len = fs::metadata(&dest_file).map(|m| m.len()).unwrap_or(0);
+                    if dest_len == bytes_copied {
+                        println!("[rust] Deleting source file after verified copy: {:?}", src_file);
+                        on_progress(UiEvent::CopyOutput(format!("Deleting {}/{} ({})", idx + 1, files_to_copy.len(), file_name_str)));
+                        if let Err(e) = fs::remove_file(src_file) {
+                            println!("[rust] Failed to delete {:?}: {:?}", src_file, e);
+                            on_progress(UiEvent::CopyOutput(format!("Error: failed to delete {}: {:?}", file_name_str, e)));
+                        }
+                    } else {
+                        println!("[rust] Not deleting {:?}: copy could not be verified ({} vs {} bytes)", src_file, dest_len, bytes_copied);
+                        on_progress(UiEvent::CopyOutput(format!("Error: copy of {} could not be verified, not deleting source", file_name_str)));
+                    }
+                }
+            }
+            Err(e) => {
+                println!("[rust]   Failed to copy {:?} to {:?}: {:?}", src_file, dest_file, e);
+            }
         }
     }
 
     if copied_anything {
-        // Drop the lock before calling read_local_media because it also calls unlock_media!
-        drop(m);
         return read_local_media(media);
     }
 

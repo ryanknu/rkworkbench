@@ -169,10 +169,31 @@
         </item>
         <item>
          <widget class="QPushButton" name="copyUsbBtn">
+          <property name="enabled">
+           <bool>false</bool>
+          </property>
           <property name="text">
            <string>Copy from USB</string>
           </property>
          </widget>
+        </item>
+        <item>
+         <layout class="QHBoxLayout" name="usbStatusHLayout">
+          <item>
+           <widget class="QCheckBox" name="deleteUsbCheckbox">
+            <property name="text">
+             <string>Delete source after copy</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="usbStatusLabel">
+            <property name="text">
+             <string>No USB detected</string>
+            </property>
+           </widget>
+          </item>
+         </layout>
         </item>
         <item>
          <widget class="QPushButton" name="identifyBtn">
@@ -192,6 +213,13 @@
          <widget class="QPushButton" name="restoreBtn">
           <property name="text">
            <string>Restore Trees</string>
+          </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QPushButton" name="fileInventoryBtn">
+          <property name="text">
+           <string>File Inventory</string>
           </property>
          </widget>
         </item>
@@ -365,6 +393,13 @@
           </item>
           <item>
            <widget class="QLabel" name="metadataRuntime">
+            <property name="text">
+             <string/>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="metadataPortable">
             <property name="text">
              <string/>
             </property>
@@ -609,13 +644,6 @@
         </spacer>
        </item>
       </layout>
-     </widget>
-    </item>
-    <item>
-     <widget class="QListView" name="tasksList">
-      <property name="text" stdset="0">
-       <string>Test</string>
-      </property>
      </widget>
     </item>
    </layout>

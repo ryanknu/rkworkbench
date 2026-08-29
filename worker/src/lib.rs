@@ -89,6 +89,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
             // Process `message`
             let events = match message.clone() {
                 PerformInitialLoad => requests::read_local_media(&MEDIA),
+                FileInventory => requests::file_inventory(&MEDIA),
                 MapMedia(from, to) => requests::map_media(&MEDIA, from, to),
                 LookupFilm(tmdb_id, tmdb_api_key) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key),
                 LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
@@ -106,7 +107,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 MatchScan(id, command) => requests::match_scan(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
                 FetchTmdbStill(id) => requests::fetch_tmdb_still(&MEDIA, id),
                 FetchMkvInfo(path) => requests::fetch_mkv_info(&MEDIA, path),
-                CopyFromUsb => requests::copy_from_usb(&MEDIA, |e| push!(cb, ptrd, &e)),
+                CopyFromUsb(delete_source) => requests::copy_from_usb(&MEDIA, delete_source, |e| push!(cb, ptrd, &e)),
                 AddToStitch(path) => requests::add_to_stitch(&MEDIA, path),
                 RemoveFromStitch(index) => requests::remove_from_stitch(&MEDIA, index),
                 ReorderStitch(from, to) => requests::reorder_stitch(&MEDIA, from, to),
@@ -162,6 +163,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
             let events = match message.clone() {
                 ReencodeRequest(id, command) => requests::reencode_tv_episode(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
                 ReencodeFilmRequest(id, command) => requests::reencode_film_video(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
+                PortableEncodeRequest(id) => requests::portable_encode(&MEDIA, id, |e| push!(cb, ptrd, &e)),
                 PerformStitch => requests::perform_stitch(&MEDIA, |e| push!(cb, ptrd, &e)),
                 _ => vec![],
             };
@@ -180,6 +182,13 @@ pub extern "C" fn initial_load() {
     println!("[rust] initial_load called");
 
     SENDER.get().map(|s| s.lock().unwrap().send(PerformInitialLoad));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn file_inventory() {
+    println!("[rust] file_inventory called");
+
+    SENDER.get().map(|s| s.lock().unwrap().send(FileInventory));
 }
 
 #[unsafe(no_mangle)]
@@ -372,9 +381,19 @@ pub extern "C" fn fetch_mkv_info(path: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn copy_from_usb() {
+pub extern "C" fn copy_from_usb(delete_source: bool) {
     println!("[rust] copy_from_usb called");
-    SENDER.get().map(|s| s.lock().unwrap().send(CopyFromUsb));
+    SENDER.get().map(|s| s.lock().unwrap().send(CopyFromUsb(delete_source)));
+}
+
+/// Synchronous, lock-free probe of whatever's currently plugged in, meant to be
+/// polled from the UI to drive the "Copy from USB" button's enabled state without
+/// going through the request queue. Returns a JSON-encoded `UsbStatus`.
+#[unsafe(no_mangle)]
+pub extern "C" fn usb_status() -> *mut c_char {
+    let status = requests::usb_status();
+    let json = serde_json::to_string(&status).unwrap();
+    CString::new(json).unwrap().into_raw()
 }
 
 #[unsafe(no_mangle)]
@@ -537,4 +556,33 @@ pub extern "C" fn collect_garbage() {
     println!("[rust] collect_garbage called");
 
     SENDER.get().map(|s| s.lock().unwrap().send(CollectGarbage));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn portable_encode(id: *const c_char) {
+    println!("[rust] portable_encode called");
+
+    let id = cstr(id);
+
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(PortableEncodeRequest(id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn has_portable_for_tv_episode(id: *const c_char) -> bool {
+    let media = match MEDIA.get().unwrap().lock() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let id = MappableMediaId::TvEpisode(TvEpisodeId(cstr(id)));
+    media.has_portable(&id)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn has_portable_for_film_video(id: *const c_char) -> bool {
+    let media = match MEDIA.get().unwrap().lock() {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    let id = MappableMediaId::FilmVideo(FilmVideoId(cstr(id)));
+    media.has_portable(&id)
 }
