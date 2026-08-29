@@ -108,6 +108,7 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 FetchTmdbStill(id) => requests::fetch_tmdb_still(&MEDIA, id),
                 FetchMkvInfo(path) => requests::fetch_mkv_info(&MEDIA, path),
                 CopyFromUsb(delete_source) => requests::copy_from_usb(&MEDIA, delete_source, |e| push!(cb, ptrd, &e)),
+                ImportPath(path) => requests::import_path(&MEDIA, path, |e| push!(cb, ptrd, &e)),
                 AddToStitch(path) => requests::add_to_stitch(&MEDIA, path),
                 RemoveFromStitch(index) => requests::remove_from_stitch(&MEDIA, index),
                 ReorderStitch(from, to) => requests::reorder_stitch(&MEDIA, from, to),
@@ -384,6 +385,13 @@ pub extern "C" fn fetch_mkv_info(path: *const c_char) {
 pub extern "C" fn copy_from_usb(delete_source: bool) {
     println!("[rust] copy_from_usb called");
     SENDER.get().map(|s| s.lock().unwrap().send(CopyFromUsb(delete_source)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn import_path(path: *const c_char) {
+    let path = cstr(path);
+    println!("[rust] import_path called with {}", path);
+    SENDER.get().map(|s| s.lock().unwrap().send(ImportPath(path)));
 }
 
 /// Synchronous, lock-free probe of whatever's currently plugged in, meant to be

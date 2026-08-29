@@ -27,6 +27,10 @@ std::string AppModel::tmdbMode() const {
     return _mTmdbMode == TV ? "TV" : "Film";
 }
 
+std::string AppModel::workingDirPath() const {
+    return _mWorkingDirPath.string();
+}
+
 /**
  * Retrieves the working dir for the application.
  * Priority Order:
@@ -76,17 +80,24 @@ void AppModel::_writeWorkingDir() const {
 void AppModel::resetDrag() {
     _mDragInitialX = 0;
     _mDragCurrentX = 0;
+    _mDragActive = false;
 }
 
 void AppModel::setInitialDragData(int x, int disksTreeWidth, int showsTreeWidth) {
     _mDragInitialX = x;
+    _mDragCurrentX = x;
     _mInitialDisksTreeWidth = disksTreeWidth;
     _mInitialShowsTreeWidth = showsTreeWidth;
     _mWhichTree = x > (disksTreeWidth + 20) ? 1 : 2;
+    _mDragActive = true;
 }
 
 void AppModel::setDragCurrentX(int x) {
     _mDragCurrentX = x;
+}
+
+bool AppModel::isDragActive() const {
+    return _mDragActive;
 }
 
 int AppModel::getCurrentDragXOffset() {

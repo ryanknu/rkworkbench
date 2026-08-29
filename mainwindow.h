@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <unordered_map>
 #include <QMainWindow>
 #include <QStandardItemModel>
 #include <QPushButton>
@@ -7,6 +8,7 @@
 #include <QMediaPlayer>
 #include <QTimer>
 #include <QCloseEvent>
+#include <QNetworkAccessManager>
 #include "model.h"
 
 QT_BEGIN_NAMESPACE
@@ -37,7 +39,16 @@ public:
 	void _selectTreeItem(std::string tree, std::string id);
 	void _changeGarbageSize(std::uint64_t size);
 	void _clearTrees();
-	void _hideTmdbApiKeyInput();
+
+	// Used by SettingsDialog to read current state and push through changes.
+	std::string workingDirPath() const;
+	QString tmdbApiKey() const { return _tmdbApiKey; }
+	QString embyTvLocation() const { return _embyTvLocation; }
+	QString embyMovieLocation() const { return _embyMovieLocation; }
+	QString haBaseUrl() const { return _haBaseUrl; }
+	bool isHomeAssistantConfigured() const { return _haConfigured; }
+	bool hasActiveJobs() const;
+	void reinitHomeAssistant();
 
 private:
 	Ui::MainWindow *ui;
@@ -59,6 +70,28 @@ private:
 	int spinnerIndex = 0;
 	QTimer *usbStatusTimer = nullptr;
 	bool _mUsbPresent = false;
+
+	// Home Assistant sensor push
+	QNetworkAccessManager *haNetworkManager = nullptr;
+	QTimer *haPushTimer = nullptr;
+	QString _haBaseUrl;
+	QString _haToken;
+	bool _haConfigured = false;
+
+	// Settings cached from ~/.config/rkworkbench/ (see SettingsDialog)
+	QString _tmdbApiKey;
+	QString _embyTvLocation;
+	QString _embyMovieLocation;
+	bool _deleteUsbAfterCopy = false;
+	bool _rsyncAfterEncode = false;
+	QString _encodeCommand;
+	QString _encodePresetLabel;
+
+	// Maps an in-flight ffmpeg job's id (episode/film-video id) to the
+	// show/film id to rsync once it completes, when "Rsync after encode" is
+	// enabled. Populated when the job is queued, consumed on CommandCompleted.
+	std::unordered_map<std::string, std::string> _encodeUploadTargets;
+
 	std::string _mediaDir;
 	std::string currentEncodingFile;
 	std::string currentRsyncFile;
@@ -70,10 +103,18 @@ private:
 	void _updateRsyncStatus();
 	void _updateCopyStatus();
 	void _updateUsbStatus();
+	void _loadHomeAssistantConfig();
+	void _pushHomeAssistantSensors();
+	void _postHomeAssistantState(const QString &entityId, double state, const QString &unit, const QString &friendlyName);
+	void _loadEmbySettings();
+	void _loadUsbCopySettings();
+	void _loadEncodeSettings();
+	void _updateEncodeBtnText();
 	std::string _getIdForSelectedItemInTree(QTreeView *&tree);
 	void _findVlc();
 	void _clearMetadataPanel();
 	void _loadInPlayer(QString path);
+	void _selectSeekableAudioTrack();
 	QString _vlcProgram;
 	QStringList _vlcArgs;
 	bool _vlcFound = false;
@@ -120,6 +161,7 @@ extern "C" {
 	void undelete_title(const char* id);
 	void collect_garbage();
 	void copy_from_usb(bool delete_source);
+	void import_path(const char* path);
 	const char* usb_status();
 	void add_to_stitch(const char* path);
 	void remove_from_stitch(size_t index);

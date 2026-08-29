@@ -1,0 +1,384 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SettingsDialog</class>
+ <widget class="QDialog" name="SettingsDialog">
+  <property name="geometry">
+   <rect>
+    <x>0</x>
+    <y>0</y>
+    <width>700</width>
+    <height>460</height>
+   </rect>
+  </property>
+  <property name="windowTitle">
+   <string>Settings</string>
+  </property>
+  <layout class="QVBoxLayout" name="dialogVLayout">
+   <item>
+    <layout class="QHBoxLayout" name="mainHLayout">
+     <item>
+      <widget class="QListWidget" name="categoryList">
+       <property name="maximumSize">
+        <size>
+         <width>180</width>
+         <height>16777215</height>
+        </size>
+       </property>
+       <property name="iconSize">
+        <size>
+         <width>32</width>
+         <height>32</height>
+        </size>
+       </property>
+      </widget>
+     </item>
+     <item>
+      <widget class="QStackedWidget" name="pages">
+       <widget class="QWidget" name="workingDirPage">
+        <layout class="QVBoxLayout" name="workingDirVLayout">
+         <item>
+          <widget class="QLabel" name="workingDirDesc">
+           <property name="text">
+            <string>The folder rkworkbench treats as its media library root.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="workingDirHLayout">
+           <item>
+            <widget class="QLineEdit" name="workingDirEdit">
+             <property name="placeholderText">
+              <string>Working Directory</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QPushButton" name="browseWorkingDirBtn">
+             <property name="text">
+              <string>Browse...</string>
+             </property>
+            </widget>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <widget class="QLabel" name="workingDirNote">
+           <property name="text">
+            <string>Changing this requires restarting rkwb.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="workingDirSpacer">
+           <property name="orientation">
+            <enum>Qt::Orientation::Vertical</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>40</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="tmdbPage">
+        <layout class="QVBoxLayout" name="tmdbVLayout">
+         <item>
+          <widget class="QLabel" name="tmdbDesc">
+           <property name="text">
+            <string>API key used to look up show and film metadata from TMDB.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="tmdbApiKeyEdit">
+           <property name="echoMode">
+            <enum>QLineEdit::EchoMode::Password</enum>
+           </property>
+           <property name="placeholderText">
+            <string>TMDB API Key</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="tmdbStatusLabel">
+           <property name="text">
+            <string>Not configured</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="tmdbSpacer">
+           <property name="orientation">
+            <enum>Qt::Orientation::Vertical</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>40</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="embyPage">
+        <layout class="QVBoxLayout" name="embyVLayout">
+         <item>
+          <widget class="QLabel" name="embyDesc">
+           <property name="text">
+            <string>Remote rsync destinations used by Upload / Load from NAS.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="embyTvLocationEdit">
+           <property name="placeholderText">
+            <string>Remote TV Location</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="embyMovieLocationEdit">
+           <property name="placeholderText">
+            <string>Remote Movie Location</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QCheckBox" name="rsyncAfterEncodeCheckbox">
+           <property name="text">
+            <string>Rsync after encode</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="rsyncAfterEncodeDesc">
+           <property name="text">
+            <string>When enabled, an rsync upload of the title is queued as soon as an ffmpeg re-encode or portable-version job for it finishes.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="embySpacer">
+           <property name="orientation">
+            <enum>Qt::Orientation::Vertical</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>40</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="haPage">
+        <layout class="QVBoxLayout" name="haVLayout">
+         <item>
+          <widget class="QLabel" name="haDesc">
+           <property name="text">
+            <string>Pushes encode/rsync progress and queue depth to a Home Assistant instance every 30s, so an automation can notify you when jobs finish.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="haBaseUrlEdit">
+           <property name="placeholderText">
+            <string>http://homeassistant.local:8123</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="haTokenEdit">
+           <property name="echoMode">
+            <enum>QLineEdit::EchoMode::Password</enum>
+           </property>
+           <property name="placeholderText">
+            <string>Long-Lived Access Token</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="haStatusLabel">
+           <property name="text">
+            <string>Not configured</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <layout class="QHBoxLayout" name="haTestHLayout">
+           <item>
+            <widget class="QPushButton" name="haTestBtn">
+             <property name="text">
+              <string>Test Connection</string>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <widget class="QLabel" name="haTestStatusLabel">
+             <property name="text">
+              <string/>
+             </property>
+            </widget>
+           </item>
+           <item>
+            <spacer name="haTestSpacer">
+             <property name="orientation">
+              <enum>Qt::Orientation::Horizontal</enum>
+             </property>
+             <property name="sizeHint" stdset="0">
+              <size>
+               <width>40</width>
+               <height>20</height>
+              </size>
+             </property>
+            </spacer>
+           </item>
+          </layout>
+         </item>
+         <item>
+          <spacer name="haSpacer">
+           <property name="orientation">
+            <enum>Qt::Orientation::Vertical</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>40</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="usbCopyPage">
+        <layout class="QVBoxLayout" name="usbCopyVLayout">
+         <item>
+          <widget class="QLabel" name="usbCopyDesc">
+           <property name="text">
+            <string>Options for copying titles in from a USB drive.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QCheckBox" name="deleteUsbCheckbox">
+           <property name="text">
+            <string>Delete source files after copy</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="usbCopySpacer">
+           <property name="orientation">
+            <enum>Qt::Orientation::Vertical</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>40</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+       <widget class="QWidget" name="encodePage">
+        <layout class="QVBoxLayout" name="encodeVLayout">
+         <item>
+          <widget class="QLabel" name="encodeDesc">
+           <property name="text">
+            <string>ffmpeg command used to re-encode video. ${in} and ${out} are substituted with the source and destination paths.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="preprocessorTemplates">
+           <item>
+            <property name="text">
+             <string>CPU (libx265)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>NVENC (HEVC)</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>NVENC (AV1)</string>
+            </property>
+           </item>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="preprocessorCommand">
+           <property name="placeholderText">
+            <string>Preprocessor Command</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="encodeSpacer">
+           <property name="orientation">
+            <enum>Qt::Orientation::Vertical</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>20</width>
+             <height>40</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+      </widget>
+     </item>
+    </layout>
+   </item>
+   <item>
+    <widget class="QDialogButtonBox" name="buttonBox">
+     <property name="standardButtons">
+      <set>QDialogButtonBox::StandardButton::Close|QDialogButtonBox::StandardButton::Save</set>
+     </property>
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections/>
+</ui>

@@ -40,6 +40,7 @@ pub enum IncomingRequest {
     FetchTmdbStill(MappableMediaId),
     FetchMkvInfo(String),
     CopyFromUsb(bool),
+    ImportPath(String),
     AddToStitch(String),
     RemoveFromStitch(usize),
     ReorderStitch(usize, usize),
@@ -817,7 +818,61 @@ fn split_shell_command(cmd: &str) -> Vec<String> {
     args
 }
 
-fn handle_ffmpeg_progress(stderr: std::process::ChildStderr, on_progress: &impl Fn(UiEvent)) {
+// Probes the duration (in seconds) of a media file via ffprobe, used to turn
+// ffmpeg's "time=" progress field into a percentage and an ETA.
+fn probe_duration_seconds(path: &std::path::Path) -> Option<f64> {
+    let output = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1"])
+        .arg(path)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse::<f64>().ok()
+}
+
+// Extracts the value of a `key=value` field from an ffmpeg -stats line.
+// ffmpeg pads some fields with spaces after the `=` (e.g. "size= 123KiB"),
+// so this skips whitespace before taking the value token.
+fn parse_ffmpeg_field<'a>(line: &'a str, key: &str) -> Option<&'a str> {
+    let pat = format!("{}=", key);
+    let idx = line.find(&pat)?;
+    let rest = line[idx + pat.len()..].trim_start();
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    if end == 0 { None } else { Some(&rest[..end]) }
+}
+
+fn parse_ffmpeg_timestamp(s: &str) -> Option<f64> {
+    let mut parts = s.split(':');
+    let h: f64 = parts.next()?.parse().ok()?;
+    let m: f64 = parts.next()?.parse().ok()?;
+    let sec: f64 = parts.next()?.parse().ok()?;
+    Some(h * 3600.0 + m * 60.0 + sec)
+}
+
+fn format_hms(total_secs: f64) -> String {
+    let total_secs = total_secs.max(0.0).round() as u64;
+    format!("{:02}:{:02}:{:02}", total_secs / 3600, (total_secs % 3600) / 60, total_secs % 60)
+}
+
+// Appends "progress=NN.N%" and, when speed is available, "eta=HH:MM:SS" to a
+// qualifying ffmpeg -stats line, using the known total duration of the input.
+fn augment_ffmpeg_line(line: &str, total_duration_secs: Option<f64>) -> String {
+    let Some(total) = total_duration_secs.filter(|d| *d > 0.0) else { return line.to_string() };
+    let Some(current) = parse_ffmpeg_field(line, "time").and_then(parse_ffmpeg_timestamp) else { return line.to_string() };
+
+    let pct = (current / total * 100.0).clamp(0.0, 100.0);
+    let mut extra = format!(" progress={:.1}%", pct);
+    if let Some(speed) = parse_ffmpeg_field(line, "speed").and_then(|s| s.trim_end_matches('x').parse::<f64>().ok()) {
+        if speed > 0.0 {
+            extra.push_str(&format!(" eta={}", format_hms((total - current).max(0.0) / speed)));
+        }
+    }
+    format!("{}{}", line, extra)
+}
+
+fn handle_ffmpeg_progress(stderr: std::process::ChildStderr, on_progress: &impl Fn(UiEvent), total_duration_secs: Option<f64>) {
     let mut reader = BufReader::new(stderr);
     let mut current_line = Vec::new();
     let mut buffer = [0u8; 1024];
@@ -831,7 +886,7 @@ fn handle_ffmpeg_progress(stderr: std::process::ChildStderr, on_progress: &impl 
                         if !current_line.is_empty() {
                             let line = String::from_utf8_lossy(&current_line).trim().to_string();
                             if (line.contains("frame=") || line.contains("size=")) && line.contains("time=") {
-                                on_progress(UiEvent::FfmpegOutput(line));
+                                on_progress(UiEvent::FfmpegOutput(augment_ffmpeg_line(&line, total_duration_secs)));
                             } else if !line.starts_with("ffmpeg version") && !line.starts_with("built with") && !line.starts_with("configuration:") && !line.starts_with("lib") {
                                 // If it's not version spam, send it. It might be an error or useful info.
                                 if !line.is_empty() {
@@ -852,13 +907,39 @@ fn handle_ffmpeg_progress(stderr: std::process::ChildStderr, on_progress: &impl 
     if !current_line.is_empty() {
         let line = String::from_utf8_lossy(&current_line).trim().to_string();
         if (line.contains("frame=") || line.contains("size=")) && line.contains("time=") {
-            on_progress(UiEvent::FfmpegOutput(line));
+            on_progress(UiEvent::FfmpegOutput(augment_ffmpeg_line(&line, total_duration_secs)));
         } else if !line.starts_with("ffmpeg version") && !line.starts_with("built with") && !line.starts_with("configuration:") && !line.starts_with("lib") {
             if !line.is_empty() {
                 on_progress(UiEvent::FfmpegOutput(line));
             }
         }
     }
+}
+
+// rsync's -P per-file progress lines look like:
+//   "  1,610,612,736  73%   45.67MB/s    0:00:12 (xfr#1, to-check=3/10)"
+// i.e. bytes, percent, rate, then time *remaining* (already an ETA, unlike
+// ffmpeg's elapsed-time stats). Appends "progress=" / "eta=" tokens, in the
+// same shape the ffmpeg status line uses, so the UI can parse both the same
+// way. Lines that aren't progress lines (filenames, summary stats) pass
+// through unchanged.
+fn augment_rsync_line(line: &str) -> String {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    let Some(pct_idx) = tokens.iter().position(|t| t.ends_with('%') && t.trim_end_matches('%').parse::<f64>().is_ok()) else {
+        return line.to_string();
+    };
+    // Rate token (e.g. "45.67MB/s") must follow immediately, or this isn't a progress line.
+    if !tokens.get(pct_idx + 1).is_some_and(|t| t.contains("/s")) {
+        return line.to_string();
+    }
+    let pct: f64 = tokens[pct_idx].trim_end_matches('%').parse().unwrap();
+    let mut extra = format!(" progress={:.1}%", pct);
+    if let Some(eta_tok) = tokens.get(pct_idx + 2) {
+        if eta_tok.contains(':') {
+            extra.push_str(&format!(" eta={}", eta_tok));
+        }
+    }
+    format!("{}{}", line, extra)
 }
 
 fn handle_rsync_progress(stdout: std::process::ChildStdout, on_progress: &impl Fn(UiEvent)) {
@@ -875,7 +956,7 @@ fn handle_rsync_progress(stdout: std::process::ChildStdout, on_progress: &impl F
                         if !current_line.is_empty() {
                             let line = String::from_utf8_lossy(&current_line).trim().to_string();
                             if !line.is_empty() {
-                                on_progress(UiEvent::RsyncOutput(line));
+                                on_progress(UiEvent::RsyncOutput(augment_rsync_line(&line)));
                             }
                             current_line.clear();
                         }
@@ -891,7 +972,7 @@ fn handle_rsync_progress(stdout: std::process::ChildStdout, on_progress: &impl F
     if !current_line.is_empty() {
         let line = String::from_utf8_lossy(&current_line).trim().to_string();
         if !line.is_empty() {
-            on_progress(UiEvent::RsyncOutput(line));
+            on_progress(UiEvent::RsyncOutput(augment_rsync_line(&line)));
         }
     }
 }
@@ -979,12 +1060,13 @@ pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId, command_str: Str
         }
     }
 
+    let total_duration_secs = probe_duration_seconds(&originals_path);
     let child_res = cmd.stderr(Stdio::piped()).spawn();
 
     match child_res {
         Ok(mut child) => {
             if let Some(stderr) = child.stderr.take() {
-                handle_ffmpeg_progress(stderr, &on_progress);
+                handle_ffmpeg_progress(stderr, &on_progress, total_duration_secs);
             }
 
             let status = child.wait();
@@ -1181,12 +1263,13 @@ pub fn reencode_film_video(media: &MediaState, id: FilmVideoId, command_str: Str
         }
     }
 
+    let total_duration_secs = probe_duration_seconds(&originals_path);
     let child_res = cmd.stderr(Stdio::piped()).spawn();
 
     match child_res {
         Ok(mut child) => {
             if let Some(stderr) = child.stderr.take() {
-                handle_ffmpeg_progress(stderr, &on_progress);
+                handle_ffmpeg_progress(stderr, &on_progress, total_duration_secs);
             }
 
             let status = child.wait();
@@ -1280,12 +1363,13 @@ pub fn portable_encode(media: &MediaState, id_str: String, on_progress: impl Fn(
        .arg("-y")
        .arg(&output_path);
 
+    let total_duration_secs = probe_duration_seconds(&input_path);
     let child_res = cmd.stderr(Stdio::piped()).spawn();
 
     match child_res {
         Ok(mut child) => {
             if let Some(stderr) = child.stderr.take() {
-                handle_ffmpeg_progress(stderr, &on_progress);
+                handle_ffmpeg_progress(stderr, &on_progress, total_duration_secs);
             }
 
             let status = child.wait();
@@ -2310,6 +2394,24 @@ pub fn copy_from_usb(media: &MediaState, delete_source: bool, on_progress: impl 
                         if let Err(e) = fs::remove_file(src_file) {
                             println!("[rust] Failed to delete {:?}: {:?}", src_file, e);
                             on_progress(UiEvent::CopyOutput(format!("Error: failed to delete {}: {:?}", file_name_str, e)));
+                        } else {
+                            // We just deleted a file, not swept the drive - only remove
+                            // directories that are now empty as a direct result, walking
+                            // up in case that emptied their parent too. Stop at the mount
+                            // root so we never touch the USB's top-level structure.
+                            let mut dir = src_file.parent();
+                            while let Some(d) = dir {
+                                if d == mount.as_path() {
+                                    break;
+                                }
+                                match fs::remove_dir(d) {
+                                    Ok(()) => {
+                                        println!("[rust] Removed now-empty source directory: {:?}", d);
+                                        dir = d.parent();
+                                    }
+                                    Err(_) => break,
+                                }
+                            }
                         }
                     } else {
                         println!("[rust] Not deleting {:?}: copy could not be verified ({} vs {} bytes)", src_file, dest_len, bytes_copied);
@@ -2328,6 +2430,76 @@ pub fn copy_from_usb(media: &MediaState, delete_source: bool, on_progress: impl 
     }
 
     vec![]
+}
+
+// Moves `src` to `dest`. Tries a plain rename first (instant, works whenever
+// both paths are on the same filesystem); if that fails - most commonly
+// because the source is on a different device (an external drive, a fuse
+// mount, etc.) - falls back to a recursive copy-then-delete, which is the
+// only way to move a file or directory across filesystems.
+fn move_path(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    if fs::rename(src, dest).is_ok() {
+        return Ok(());
+    }
+
+    if src.is_dir() {
+        fs::create_dir_all(dest)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            move_path(&entry.path(), &dest.join(entry.file_name()))?;
+        }
+        fs::remove_dir(src)
+    } else {
+        fs::copy(src, dest)?;
+        fs::remove_file(src)
+    }
+}
+
+// Imports a file or folder picked from outside the media directory. A single
+// video file lands in "Lost & Found" (same place files land when unidentified
+// or extracted from a stitch); a folder is moved into the working dir under
+// its own name, mirroring how a disk's rip folder already looks once it's in
+// the tree.
+pub fn import_path(media: &MediaState, source: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let source_path = PathBuf::from(&source);
+
+    let target_dir = {
+        let m = unlock_media!(media);
+        m.media_dir.clone()
+    };
+
+    let is_dir = match fs::metadata(&source_path) {
+        Ok(metadata) => metadata.is_dir(),
+        Err(e) => {
+            on_progress(UiEvent::CopyOutput(format!("Error: could not read {}: {:?}", source, e)));
+            return vec![];
+        }
+    };
+
+    let Some(file_name) = source_path.file_name().map(|n| n.to_owned()) else {
+        on_progress(UiEvent::CopyOutput(format!("Error: invalid path {}", source)));
+        return vec![];
+    };
+
+    let dest_path = if is_dir {
+        target_dir.join(&file_name)
+    } else {
+        let lost_found = target_dir.join("Lost & Found");
+        if let Err(e) = fs::create_dir_all(&lost_found) {
+            on_progress(UiEvent::CopyOutput(format!("Error: failed to create {}: {:?}", lost_found.display(), e)));
+            return vec![];
+        }
+        lost_found.join(&file_name)
+    };
+
+    on_progress(UiEvent::CopyOutput(format!("Importing {}", file_name.to_string_lossy())));
+
+    if let Err(e) = move_path(&source_path, &dest_path) {
+        on_progress(UiEvent::CopyOutput(format!("Error: failed to import {}: {:?}", file_name.to_string_lossy(), e)));
+        return vec![];
+    }
+
+    read_local_media(media)
 }
 
 pub fn add_to_stitch(media: &MediaState, path: String) -> Vec<UiEvent> {

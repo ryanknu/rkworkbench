@@ -12,11 +12,13 @@ public:
     AppModel(std::string outDir);
     std::string tmdbMode() const;
     void toggleTmdbMode();
+    std::string workingDirPath() const;
 
     // Splitter for tree widths
     void resetDrag();
     void setInitialDragData(int x, int disksTreeWidth, int showsTreeWidth);
     void setDragCurrentX(int x);
+    bool isDragActive() const;
     int getCurrentDragXOffset();
     int getCurrentDisksTreeWidth();
     int getCurrentShowsTreeWidth();
@@ -37,6 +39,7 @@ private:
     int _mInitialDisksTreeWidth = 200;
     int _mInitialShowsTreeWidth = 200;
     int _mWhichTree = 0;
+    bool _mDragActive = false;
 
     void _readWorkingDir(std::string outDir);
     void _writeWorkingDir() const;

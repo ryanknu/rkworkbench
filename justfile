@@ -14,6 +14,8 @@ UIC := f'{{QTTOOLS}}/uic'
 build:
     {{MOC}} mainwindow.h > moc_mainwindow.cpp
     {{UIC}} mainwindow.ui > ui_mainwindow.h
+    {{MOC}} settingsdialog.h > moc_settingsdialog.cpp
+    {{UIC}} settingsdialog.ui > ui_settingsdialog.h
     cargo build --release --manifest-path=worker/Cargo.toml
     g++ *.cpp {{LIBS}} {{CFLAGS}} {{RUST_LIB}} {{OPTIONS}} -o {{EXE}}
 
