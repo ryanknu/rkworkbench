@@ -26,6 +26,7 @@ pub struct MediaState {
     pub(crate) confirmed_plays: RefCell<HashSet<PathBuf>>,
     pub(crate) rsynced_paths: RefCell<HashSet<PathBuf>>,
     pub(crate) stitch_list: RefCell<Vec<String>>,
+    pub(crate) cut_session: RefCell<Option<CutSession>>,
 }
 
 impl Debug for MediaState {
@@ -114,6 +115,7 @@ impl MediaState {
             confirmed_plays: Default::default(),
             rsynced_paths: Default::default(),
             stitch_list: Default::default(),
+            cut_session: Default::default(),
         }
     }
 
@@ -355,6 +357,20 @@ pub struct FileBackedTitle {
     pub(crate) collection: String,
     pub(crate) file_name: String,
     pub(crate) file_size: u64,
+}
+
+/// In-progress "cuts" operation for a single source title. Lives only in memory --
+/// nothing is written to disk until `requests::process_cuts` runs. Segment bounds are
+/// derived on demand from `duration_ms` + `cut_points_ms` (see
+/// `requests::compute_segment_bounds`), so this struct only stores the cut points.
+#[derive(Clone)]
+pub struct CutSession {
+    pub title_id: FileBackedTitleId,
+    pub source_path: PathBuf,
+    pub duration_ms: u64,
+    pub chapters_ms: Vec<u64>,
+    pub cut_points_ms: Vec<u64>,
+    pub assignments: std::collections::HashMap<usize, MappableMediaId>,
 }
 
 impl MediaState {

@@ -50,6 +50,9 @@ pub enum UiEvent {
     ChangeGarbageSize {
         size: u64,
     },
+    ShowError {
+        message: String,
+    },
     ClearTrees,
     WorkerReady,
     RecalledConfirmedTmdbApiKey,
@@ -81,6 +84,24 @@ pub enum UiEvent {
     SetStitchList {
         files: Vec<String>,
     },
+    CutSessionStarted {
+        title_id: String,
+        duration_ms: u64,
+        chapters_ms: Vec<u64>,
+    },
+    CutSessionEnded,
+    SetCutSegments {
+        segments: Vec<CutSegmentInfo>,
+    },
+}
+
+#[derive(Serialize)]
+pub struct CutSegmentInfo {
+    pub index: usize,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub length_ms: u64,
+    pub assigned_label: Option<String>,
 }
 
 #[derive(Serialize)]

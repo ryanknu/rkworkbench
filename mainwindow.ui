@@ -406,10 +406,34 @@ Lookup...</string>
             </property>
            </widget>
           </item>
+          <item>
+           <widget class="QPushButton" name="cutBtn">
+            <property name="text">
+             <string>Cut</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLabel" name="audioTrackLabel">
+            <property name="text">
+             <string>Audio:</string>
+            </property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QComboBox" name="audioTrackCombo">
+            <property name="minimumSize">
+             <size>
+              <width>160</width>
+              <height>0</height>
+             </size>
+            </property>
+           </widget>
+          </item>
          </layout>
         </item>
         <item>
-         <widget class="QSlider" name="videoSeek">
+         <widget class="CutMarkerSlider" name="videoSeek">
           <property name="orientation">
            <enum>Qt::Orientation::Horizontal</enum>
           </property>
@@ -423,6 +447,82 @@ Lookup...</string>
             <height>450</height>
            </size>
           </property>
+         </widget>
+        </item>
+        <item>
+         <widget class="QGroupBox" name="cutGroup">
+          <property name="visible">
+           <bool>false</bool>
+          </property>
+          <property name="title">
+           <string>Cut Segments</string>
+          </property>
+          <layout class="QVBoxLayout" name="cutLayout">
+           <item>
+            <widget class="QTableWidget" name="cutSegmentsTable">
+             <property name="maximumSize">
+              <size>
+               <width>16777215</width>
+               <height>160</height>
+              </size>
+             </property>
+             <property name="editTriggers">
+              <set>QAbstractItemView::NoEditTriggers</set>
+             </property>
+             <property name="selectionBehavior">
+              <enum>QAbstractItemView::SelectRows</enum>
+             </property>
+             <property name="selectionMode">
+              <enum>QAbstractItemView::SingleSelection</enum>
+             </property>
+             <column>
+              <property name="text">
+               <string>Start</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>End</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Length</string>
+              </property>
+             </column>
+             <column>
+              <property name="text">
+               <string>Assigned</string>
+              </property>
+             </column>
+            </widget>
+           </item>
+           <item>
+            <layout class="QHBoxLayout" name="cutButtonsLayout">
+             <item>
+              <widget class="QPushButton" name="cutAssignBtn">
+               <property name="text">
+                <string>Assign</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="cutProcessBtn">
+               <property name="text">
+                <string>Process Cuts</string>
+               </property>
+              </widget>
+             </item>
+             <item>
+              <widget class="QPushButton" name="cutCancelBtn">
+               <property name="text">
+                <string>Cancel Cut</string>
+               </property>
+              </widget>
+             </item>
+            </layout>
+           </item>
+          </layout>
          </widget>
         </item>
         <item>
@@ -804,6 +904,11 @@ Lookup...</string>
    <extends>QWidget</extends>
    <header location="global">QVideoWidget</header>
    <container>1</container>
+  </customwidget>
+  <customwidget>
+   <class>CutMarkerSlider</class>
+   <extends>QSlider</extends>
+   <header>cutmarkerslider.h</header>
   </customwidget>
  </customwidgets>
  <resources/>

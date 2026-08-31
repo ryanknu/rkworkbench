@@ -1,8 +1,9 @@
 use crate::media::{MappableMediaId, FileBackedTitleId, Film, FilmId, FilmVideoId, MediaId, TvShow, TvShowEpisode, TvShowId, TvEpisodeId};
 use crate::tmdb::{TmdbItem, TmdbTvShow, TmdbTvShowSeason};
-use crate::ui::{build_films_tree_by_disk_usage, build_files_tree, build_films_tree, build_tv_shows_tree, build_tv_shows_tree_by_disk_usage, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, MatchResult, Tree, TreeItem, TreeItemChange::ChangeColor, UiEvent, MediaMetadata, MkvTrack};
+use crate::ui::{build_films_tree_by_disk_usage, build_files_tree, build_films_tree, build_tv_shows_tree, build_tv_shows_tree_by_disk_usage, get_add_tree_item_for_film, get_add_tree_item_for_tv_show, get_garbage_size, get_tmdb_key_event, get_tree_change_action_for_mappable, get_tree_change_action_for_mapping_file, MatchResult, Tree, TreeItem, TreeItemChange::ChangeColor, UiEvent, MediaMetadata, MkvTrack, CutSegmentInfo};
 use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
+use std::collections::HashSet;
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
@@ -16,8 +17,8 @@ type MediaState = OnceLock<Mutex<crate::media::MediaState>>;
 
 #[derive(Clone, Serialize, Deserialize)]
 pub enum IncomingRequest {
-    LookupFilm(String, Option<String>),
-    LookupTv(String, Option<String>),
+    LookupFilm(String, Option<String>, bool),
+    LookupTv(String, Option<String>, bool),
     MapMedia(FileBackedTitleId, MappableMediaId),
     PerformInitialLoad,
     RsyncRequest(String, String, String),
@@ -32,8 +33,8 @@ pub enum IncomingRequest {
     UndeleteTitle(FileBackedTitleId),
     Unidentify(TvEpisodeId),
     UnidentifyFilm(FilmVideoId),
-    ReencodeRequest(TvEpisodeId, String),
-    ReencodeFilmRequest(FilmVideoId, String),
+    ReencodeRequest(TvEpisodeId, String, bool, String),
+    ReencodeFilmRequest(FilmVideoId, String, bool, String),
     CollectGarbage,
     RestoreOriginal(MappableMediaId),
     MatchScan(FileBackedTitleId, String),
@@ -47,6 +48,13 @@ pub enum IncomingRequest {
     ClearStitch,
     PerformStitch,
     FileInventory,
+    StartCut(FileBackedTitleId),
+    AddCutPoint(u64),
+    RemoveCutPoint(usize),
+    AssignCutSegment(usize, MappableMediaId),
+    UnassignCutSegment(usize),
+    CancelCut,
+    ProcessCuts(String),
 }
 
 /// Macro to help conveniently unlock the media state. I used a single expression over let-else
@@ -125,12 +133,10 @@ fn strip_id_prefix(id: &str) -> String {
     }
 }
 
-pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
-    let media = unlock_media!(media);
-
-    media.load_confirmed_plays();
-    media.load_rsynced_paths();
-
+/// Rescans local media on disk, reprocesses the tmdb cache to rebuild films/tv shows from it,
+/// and rebuilds the Files/Films/TvShows trees. Used both for the initial load and any time a
+/// file operation invalidates the in-memory library (e.g. restoring an original file).
+fn reload_local_media(media: &crate::media::MediaState) -> Vec<UiEvent> {
     // This should be moved.
     media.read_local_media();
 
@@ -143,14 +149,14 @@ pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
     let mut unprocessable = Vec::new();
     for entry in media.tmdb().iterate_cache() {
         println!("Processing cache entry (1/2): {:?}", entry);
-        if let Some(entry) = add_to_library(&media, entry) {
+        if let Some(entry) = add_to_library(media, entry) {
             unprocessable.push(entry);
         }
     }
 
     for entry in unprocessable {
         println!("Processing cache entry (2/2): {:?}", entry);
-        if let Some(entry) = add_to_library(&media, entry) {
+        if let Some(entry) = add_to_library(media, entry) {
             println!("Failed to add item to media library: {:?}", entry);
         }
     }
@@ -158,16 +164,25 @@ pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
     media.sort_collections();
 
     let mut events = vec![UiEvent::ClearTrees];
-    events.extend(build_files_tree(&media));
-    events.extend(build_films_tree(&media));
-    events.extend(build_tv_shows_tree(&media));
-    events.push(get_garbage_size(&media));
+    events.extend(build_files_tree(media));
+    events.extend(build_films_tree(media));
+    events.extend(build_tv_shows_tree(media));
+    events.push(get_garbage_size(media));
 
     if media.has_confirmed_tmdb_api_key() {
         events.push(get_tmdb_key_event());
     }
 
     events
+}
+
+pub fn read_local_media(media: &MediaState) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+
+    media.load_confirmed_plays();
+    media.load_rsynced_paths();
+
+    reload_local_media(&media)
 }
 
 /// Rebuilds the Shows/Films trees sorted by total on-disk footprint (encoded output
@@ -263,7 +278,7 @@ pub fn map_media(media: &MediaState, from: FileBackedTitleId, to: MappableMediaI
     events
 }
 
-pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<String>) -> Vec<UiEvent> {
+pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<String>, skip_special_features: bool) -> Vec<UiEvent> {
     let media = unlock_media!(media);
 
     if tmdb_api_key.is_none() && !media.has_confirmed_tmdb_api_key() {
@@ -274,7 +289,7 @@ pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Str
     let tmdb_api_key = tmdb_api_key.as_ref();
     let api_key = tmdb_api_key.map(|s| &s[..]).unwrap_or_else(|| media.get_tmdb_api_key());
 
-    let Ok((film, videos)) = media.tmdb().query_film(api_key, &tmdb_id) else {
+    let Ok((film, videos)) = media.tmdb().query_film(api_key, &tmdb_id, skip_special_features) else {
         println!("Error querying TMDB for film: {}", tmdb_id);
         return vec![];
     };
@@ -290,11 +305,11 @@ pub fn lookup_film(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Str
     results.extend(
         videos.results.into_iter().map(|video| get_add_tree_item_for_film(&media, video.id, film.id.0.to_string(), film.name.clone(), format!("{} - {}", video.r#type, video.name)))
     );
-    
+
     results
 }
 
-pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<String>) -> Vec<UiEvent> {
+pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<String>, skip_season_0: bool) -> Vec<UiEvent> {
     let media = unlock_media!(media);
 
     if tmdb_api_key.is_none() && !media.has_confirmed_tmdb_api_key() {
@@ -319,6 +334,7 @@ pub fn lookup_tv(media: &MediaState, tmdb_id: String, tmdb_api_key: Option<Strin
     for season_json in seasons_json {
         let season: TmdbTvShowSeason = serde_json::from_slice(&season_json).unwrap();
         if season.episodes.is_empty() { continue; }
+        if skip_season_0 && season.episodes[0].season_number == 0 { continue; }
 
         let episodes: Vec<TvShowEpisode> = season.episodes.into_iter().map(|v| {
             let builder = TvShowEpisodeBuilder::from(v);
@@ -547,6 +563,39 @@ pub fn confirm_play(media: &MediaState, id: MappableMediaId) -> Vec<UiEvent> {
     }
 }
 
+/// Names of files matching any of `ids` that aren't yet safe to lose, i.e. not both
+/// confirmed played and rsynced. Removing metadata unmaps a file with no way to re-map
+/// it, so it can never be confirmed played again and would be abandoned forever; gating
+/// removal on this keeps every unmapped file on the path to eventual GC.
+///
+/// Goes through `get_title_id_for_mappable` (not a raw `mapped_media` match) since most
+/// on-disk files are associated by filename pattern (`MediaId::SemanticNameKey`) rather
+/// than an explicit map action — that's the path every other on-disk check in this file
+/// (`is_confirmed_play`, `get_on_disk_file_size`, `has_original`) already uses.
+fn files_not_yet_safe_to_delete(
+    media: &crate::media::MediaState,
+    confirmed_plays: &HashSet<PathBuf>,
+    rsynced_paths: &HashSet<PathBuf>,
+    ids: &[MappableMediaId],
+) -> Vec<String> {
+    ids.iter()
+        .filter_map(|id| media.get_title_id_for_mappable(id))
+        .filter_map(|tid| media.file_backed_titles.borrow().iter().find(|t| t.id == tid).cloned())
+        .filter(|t| !t.marked_for_deletion(confirmed_plays, rsynced_paths, &media.media_dir))
+        .map(|t| t.name().to_string())
+        .collect()
+}
+
+fn metadata_removal_blocked_error(kind: &str, blocking: Vec<String>) -> UiEvent {
+    UiEvent::ShowError {
+        message: format!(
+            "Can't remove this {kind}'s metadata yet — {} file(s) haven't been rsynced and confirmed played, and would be abandoned: {}",
+            blocking.len(),
+            blocking.join(", "),
+        ),
+    }
+}
+
 pub fn delete_tv_show(media: &MediaState, id: String) -> Vec<UiEvent> {
     let media = unlock_media!(media);
     let raw_id = strip_id_prefix(&id);
@@ -594,19 +643,32 @@ pub fn delete_tv_season(media: &MediaState, id: String, season: usize) -> Vec<Ui
     let raw_id = strip_id_prefix(&id);
     let show_id = TvShowId(raw_id);
 
-    let mut events = Vec::new();
     let mut episodes_to_remove = Vec::new();
     {
         let episodes = media.tv_show_episodes.borrow();
         for ep in episodes.iter() {
             if ep.show_id == show_id && ep.season_number == season {
                 episodes_to_remove.push(ep.id.clone());
-                events.push(UiEvent::RemoveTreeItemById {
-                    tree: Tree::TvShows,
-                    id: ep.id.0.clone(),
-                });
             }
         }
+    }
+
+    {
+        let confirmed = media.confirmed_plays.borrow();
+        let rsynced = media.rsynced_paths.borrow();
+        let ids: Vec<MappableMediaId> = episodes_to_remove.iter().cloned().map(MappableMediaId::TvEpisode).collect();
+        let blocking = files_not_yet_safe_to_delete(&media, &confirmed, &rsynced, &ids);
+        if !blocking.is_empty() {
+            return vec![metadata_removal_blocked_error("season", blocking)];
+        }
+    }
+
+    let mut events = Vec::new();
+    for ep_id in &episodes_to_remove {
+        events.push(UiEvent::RemoveTreeItemById {
+            tree: Tree::TvShows,
+            id: ep_id.0.clone(),
+        });
     }
 
     // Unmap files
@@ -977,7 +1039,125 @@ fn handle_rsync_progress(stdout: std::process::ChildStdout, on_progress: &impl F
     }
 }
 
-pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId, command_str: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+// Checks how much of the source's duration a freshly-encoded video track
+// actually covers, by counting the video stream's packets directly rather
+// than trusting the file's own container metadata or seek index (Cues).
+// NVENC has been observed to silently hang partway through a long encode:
+// ffmpeg's other streams (audio/subtitles, on a separate copy path) keep
+// flowing to real EOF and the process still exits successfully, producing a
+// file whose video track is truncated but whose overall declared duration
+// still claims the full runtime. Packet counting is unaffected by that,
+// since it doesn't rely on seeking or on the file's own Cues table.
+// Returns the encoded/source duration ratio, or None if it can't be determined.
+fn probe_video_coverage_ratio(encoded_path: &std::path::Path, source_duration_secs: f64) -> Option<f64> {
+    if source_duration_secs <= 0.0 {
+        return None;
+    }
+
+    let output = std::process::Command::new("ffprobe")
+        .args(["-v", "error", "-select_streams", "v:0", "-count_packets",
+               "-show_entries", "stream=nb_read_packets,r_frame_rate", "-of", "csv=p=0"])
+        .arg(encoded_path)
+        .output()
+        .ok()?;
+
+    let text = String::from_utf8_lossy(&output.stdout);
+    let line = text.lines().next()?;
+    let mut parts = line.splitn(2, ',');
+    let frame_rate = parts.next()?;
+    let packet_count: f64 = parts.next()?.trim().parse().ok()?;
+
+    let mut fr_parts = frame_rate.splitn(2, '/');
+    let num: f64 = fr_parts.next()?.parse().ok()?;
+    let den: f64 = fr_parts.next().unwrap_or("1").parse().ok()?;
+    if num <= 0.0 {
+        return None;
+    }
+
+    let encoded_duration = packet_count * den / num;
+    Some(encoded_duration / source_duration_secs)
+}
+
+// Runs a user-supplied mkvmerge command template (supporting ${video}, ${in},
+// ${out} placeholders) to remux the passthrough audio/subtitle/chapter tracks
+// from the original source onto a freshly ffmpeg-encoded video file. ffmpeg's
+// own matroska muxer was found to break seek/audio playback when interleaving
+// subtitle tracks alongside certain hevc_nvenc + AC3 combinations; mkvmerge
+// doesn't have that problem, so it's used as a second muxing pass instead of
+// letting ffmpeg's own -c:a copy/-c:s copy handle those tracks. Writes to a
+// temp path (mkvmerge can't read and write the same file) and returns it.
+fn run_mkvmerge_remux(video_path: &PathBuf, orig_path: &PathBuf, command_str: &str, on_progress: &impl Fn(UiEvent)) -> Result<PathBuf, String> {
+    let args = split_shell_command(command_str);
+    if args.is_empty() {
+        return Err("Empty mkvmerge command".to_string());
+    }
+
+    let stem = video_path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+    let temp_path = video_path.with_file_name(format!("{}.remux-tmp.mkv", stem));
+
+    let mut cmd = std::process::Command::new(&args[0]);
+    for arg in &args[1..] {
+        let replaced = arg.replace("${video}", &video_path.to_string_lossy())
+                          .replace("${in}", &orig_path.to_string_lossy())
+                          .replace("${out}", &temp_path.to_string_lossy());
+        cmd.arg(replaced);
+    }
+
+    let mut child = match cmd.stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(e) => return Err(format!("failed to spawn mkvmerge: {:?}", e)),
+    };
+
+    let stderr_handle = child.stderr.take().map(|stderr| thread::spawn(move || {
+        let mut s = String::new();
+        let mut reader = BufReader::new(stderr);
+        let _ = reader.read_to_string(&mut s);
+        s
+    }));
+
+    if let Some(stdout) = child.stdout.take() {
+        let mut reader = BufReader::new(stdout);
+        let mut current_line = Vec::new();
+        let mut buffer = [0u8; 1024];
+        loop {
+            match reader.read(&mut buffer) {
+                Ok(0) => break,
+                Ok(n) => {
+                    for &b in &buffer[..n] {
+                        if b == b'\r' || b == b'\n' {
+                            if !current_line.is_empty() {
+                                let line = String::from_utf8_lossy(&current_line).trim().to_string();
+                                if !line.is_empty() {
+                                    on_progress(UiEvent::FfmpegOutput(format!("Muxing: {line}")));
+                                }
+                                current_line.clear();
+                            }
+                        } else {
+                            current_line.push(b);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if !current_line.is_empty() {
+            let line = String::from_utf8_lossy(&current_line).trim().to_string();
+            if !line.is_empty() {
+                on_progress(UiEvent::FfmpegOutput(format!("Muxing: {line}")));
+            }
+        }
+    }
+
+    let stderr_output = stderr_handle.and_then(|h| h.join().ok()).unwrap_or_default();
+
+    match child.wait() {
+        Ok(s) if s.success() => Ok(temp_path),
+        Ok(s) => Err(format!("mkvmerge exited with status {:?}: {}", s, stderr_output.trim())),
+        Err(e) => Err(format!("failed to wait for mkvmerge: {:?}", e)),
+    }
+}
+
+pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId, command_str: String, mkvmerge_enabled: bool, mkvmerge_command: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
     let id = TvEpisodeId(strip_id_prefix(&id.0));
     let (current_path, originals_path) = {
         let media = unlock_media!(media);
@@ -1074,12 +1254,54 @@ pub fn reencode_tv_episode(media: &MediaState, id: TvEpisodeId, command_str: Str
             match status {
                 Ok(s) if s.success() => {
                     println!("ffmpeg successful for {:?}", current_path);
-                    // 5. Update state (file size)
-                    if let Ok(metadata) = fs::metadata(&current_path) {
-                        let media = unlock_media!(media);
-                        let mut titles = media.file_backed_titles.borrow_mut();
-                        if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
-                            title.file_size = metadata.len();
+
+                    // 5. Sanity-check the encoded video actually covers the source's
+                    // duration. NVENC has been observed to silently hang partway
+                    // through a long encode while ffmpeg's audio/subtitle copy
+                    // threads keep running to real EOF, so the process still exits
+                    // successfully despite producing a truncated video track.
+                    let coverage = probe_video_coverage_ratio(&current_path, total_duration_secs.unwrap_or(0.0));
+                    let video_ok = matches!(coverage, Some(ratio) if ratio >= 0.90);
+
+                    if !video_ok {
+                        let msg = match coverage {
+                            Some(ratio) => format!("Error: encoded video only covers {:.1}% of the source's duration (likely a hardware encoder failure). Original restored.", ratio * 100.0),
+                            None => "Error: could not verify the encoded video's duration (missing or unreadable video stream). Original restored.".to_string(),
+                        };
+                        println!("{}", msg);
+                        on_progress(UiEvent::FfmpegOutput(msg));
+                        let _ = fs::rename(&originals_path, &current_path);
+                    } else {
+                        // 6. Optional second pass: remux passthrough audio/subtitle/chapter
+                        // tracks from the original onto the new video with mkvmerge, since
+                        // ffmpeg's own muxer can break seek/audio playback when interleaving
+                        // subtitles with certain video/audio combinations.
+                        if mkvmerge_enabled {
+                            on_progress(UiEvent::FfmpegOutput("Muxing: starting mkvmerge remux...".to_string()));
+                            match run_mkvmerge_remux(&current_path, &originals_path, &mkvmerge_command, &on_progress) {
+                                Ok(temp_path) => {
+                                    if let Err(e) = fs::rename(&temp_path, &current_path) {
+                                        println!("Error replacing {:?} with remuxed file: {:?}", current_path, e);
+                                        on_progress(UiEvent::FfmpegOutput(format!("Error: failed to finalize mkvmerge remux: {:?}", e)));
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("mkvmerge remux failed for {:?}: {}", current_path, e);
+                                    on_progress(UiEvent::FfmpegOutput(format!("Error: mkvmerge remux failed: {}", e)));
+                                    // Keep the ffmpeg-only output; not worth discarding a
+                                    // successful (and possibly lengthy) encode over an
+                                    // optional remux failure.
+                                }
+                            }
+                        }
+
+                        // 7. Update state (file size)
+                        if let Ok(metadata) = fs::metadata(&current_path) {
+                            let media = unlock_media!(media);
+                            let mut titles = media.file_backed_titles.borrow_mut();
+                            if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
+                                title.file_size = metadata.len();
+                            }
                         }
                     }
                 }
@@ -1184,7 +1406,7 @@ pub fn unidentify_film_video(media: &MediaState, id: FilmVideoId) -> Vec<UiEvent
     events
 }
 
-pub fn reencode_film_video(media: &MediaState, id: FilmVideoId, command_str: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+pub fn reencode_film_video(media: &MediaState, id: FilmVideoId, command_str: String, mkvmerge_enabled: bool, mkvmerge_command: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
     let id = FilmVideoId(strip_id_prefix(&id.0));
     let (current_path, originals_path) = {
         let media = unlock_media!(media);
@@ -1277,11 +1499,53 @@ pub fn reencode_film_video(media: &MediaState, id: FilmVideoId, command_str: Str
             match status {
                 Ok(s) if s.success() => {
                     println!("ffmpeg successful for {:?}", current_path);
-                    if let Ok(metadata) = fs::metadata(&current_path) {
-                        let media = unlock_media!(media);
-                        let mut titles = media.file_backed_titles.borrow_mut();
-                        if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
-                            title.file_size = metadata.len();
+
+                    // Sanity-check the encoded video actually covers the source's
+                    // duration. NVENC has been observed to silently hang partway
+                    // through a long encode while ffmpeg's audio/subtitle copy
+                    // threads keep running to real EOF, so the process still exits
+                    // successfully despite producing a truncated video track.
+                    let coverage = probe_video_coverage_ratio(&current_path, total_duration_secs.unwrap_or(0.0));
+                    let video_ok = matches!(coverage, Some(ratio) if ratio >= 0.90);
+
+                    if !video_ok {
+                        let msg = match coverage {
+                            Some(ratio) => format!("Error: encoded video only covers {:.1}% of the source's duration (likely a hardware encoder failure). Original restored.", ratio * 100.0),
+                            None => "Error: could not verify the encoded video's duration (missing or unreadable video stream). Original restored.".to_string(),
+                        };
+                        println!("{}", msg);
+                        on_progress(UiEvent::FfmpegOutput(msg));
+                        let _ = fs::rename(&originals_path, &current_path);
+                    } else {
+                        // Optional second pass: remux passthrough audio/subtitle/chapter
+                        // tracks from the original onto the new video with mkvmerge, since
+                        // ffmpeg's own muxer can break seek/audio playback when interleaving
+                        // subtitles with certain video/audio combinations.
+                        if mkvmerge_enabled {
+                            on_progress(UiEvent::FfmpegOutput("Muxing: starting mkvmerge remux...".to_string()));
+                            match run_mkvmerge_remux(&current_path, &originals_path, &mkvmerge_command, &on_progress) {
+                                Ok(temp_path) => {
+                                    if let Err(e) = fs::rename(&temp_path, &current_path) {
+                                        println!("Error replacing {:?} with remuxed file: {:?}", current_path, e);
+                                        on_progress(UiEvent::FfmpegOutput(format!("Error: failed to finalize mkvmerge remux: {:?}", e)));
+                                    }
+                                }
+                                Err(e) => {
+                                    println!("mkvmerge remux failed for {:?}: {}", current_path, e);
+                                    on_progress(UiEvent::FfmpegOutput(format!("Error: mkvmerge remux failed: {}", e)));
+                                    // Keep the ffmpeg-only output; not worth discarding a
+                                    // successful (and possibly lengthy) encode over an
+                                    // optional remux failure.
+                                }
+                            }
+                        }
+
+                        if let Ok(metadata) = fs::metadata(&current_path) {
+                            let media = unlock_media!(media);
+                            let mut titles = media.file_backed_titles.borrow_mut();
+                            if let Some(title) = titles.iter_mut().find(|t| t.path == current_path) {
+                                title.file_size = metadata.len();
+                            }
                         }
                     }
                 }
@@ -1537,6 +1801,28 @@ fn probe_video(path: &std::path::Path) -> Option<VideoInfo> {
         }
     }
     None
+}
+
+/// Extracts chapter start times (ms) via ffprobe. Chapters are advisory: an empty
+/// Vec (no chapters, or ffprobe/parse failure) just disables cut-point snapping.
+fn probe_chapters(path: &std::path::Path) -> Vec<u64> {
+    let output = std::process::Command::new("ffprobe")
+        .arg("-v").arg("error")
+        .arg("-show_chapters")
+        .arg("-of").arg("json")
+        .arg(path)
+        .output();
+
+    let Ok(output) = output else { return vec![]; };
+    let Ok(json) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else { return vec![]; };
+    let Some(chapters) = json["chapters"].as_array() else { return vec![]; };
+
+    chapters.iter().filter_map(|c| {
+        c["start_time"].as_str()
+            .and_then(|s| s.parse::<f64>().ok())
+            .or_else(|| c["start_time"].as_f64())
+    }).map(|secs| (secs * 1000.0).round() as u64)
+      .collect()
 }
 
 pub fn match_scan(media: &MediaState, id: FileBackedTitleId, command_str: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
@@ -1834,8 +2120,6 @@ pub fn delete_film(media: &MediaState, id: String) -> Vec<UiEvent> {
     let raw_id = strip_id_prefix(&id);
     let film_id = FilmId(raw_id.clone());
 
-    let mut events = Vec::new();
-
     // 1. Identify all videos to be removed and their mappings
     let mut videos_to_remove = Vec::new();
     {
@@ -1846,6 +2130,18 @@ pub fn delete_film(media: &MediaState, id: String) -> Vec<UiEvent> {
             }
         }
     }
+
+    {
+        let confirmed = media.confirmed_plays.borrow();
+        let rsynced = media.rsynced_paths.borrow();
+        let ids: Vec<MappableMediaId> = videos_to_remove.iter().cloned().map(MappableMediaId::FilmVideo).collect();
+        let blocking = files_not_yet_safe_to_delete(&media, &confirmed, &rsynced, &ids);
+        if !blocking.is_empty() {
+            return vec![metadata_removal_blocked_error("film", blocking)];
+        }
+    }
+
+    let mut events = Vec::new();
 
     // 2. Unmap files in Files tree
     {
@@ -1875,6 +2171,15 @@ pub fn delete_film_video(media: &MediaState, id: String) -> Vec<UiEvent> {
     let media = unlock_media!(media);
     let raw_id = strip_id_prefix(&id);
     let video_id = FilmVideoId(raw_id.clone());
+
+    {
+        let confirmed = media.confirmed_plays.borrow();
+        let rsynced = media.rsynced_paths.borrow();
+        let blocking = files_not_yet_safe_to_delete(&media, &confirmed, &rsynced, &[MappableMediaId::FilmVideo(video_id.clone())]);
+        if !blocking.is_empty() {
+            return vec![metadata_removal_blocked_error("video", blocking)];
+        }
+    }
 
     let mut events = Vec::new();
 
@@ -2024,16 +2329,7 @@ pub fn restore_original(media: &crate::requests::MediaState, id: MappableMediaId
         return vec![];
     }
 
-    media.read_local_media();
-    media.sort_collections();
-
-    let mut events = vec![UiEvent::ClearTrees];
-    events.extend(build_files_tree(&media));
-    events.extend(build_films_tree(&media));
-    events.extend(build_tv_shows_tree(&media));
-    events.push(get_garbage_size(&media));
-
-    events
+    reload_local_media(&media)
 }
 
 fn remove_empty_folders(path: &std::path::Path, can_delete: bool) {
@@ -2601,4 +2897,350 @@ pub fn perform_stitch(media: &MediaState, on_progress: impl Fn(UiEvent)) -> Vec<
     }
 
     vec![]
+}
+
+const CUT_SNAP_THRESHOLD_MS: u64 = 2000;
+const CUT_MIN_GAP_MS: u64 = 250;
+
+/// Segment boundaries derived from an interior cut-point list, e.g. `[a, b]` with a
+/// `duration_ms` of `d` yields `[(0,a), (a,b), (b,d)]`.
+fn compute_cut_segment_bounds(duration_ms: u64, cut_points_ms: &[u64]) -> Vec<(u64, u64)> {
+    let mut bounds = Vec::with_capacity(cut_points_ms.len() + 1);
+    let mut prev = 0u64;
+    for &cp in cut_points_ms {
+        bounds.push((prev, cp));
+        prev = cp;
+    }
+    bounds.push((prev, duration_ms));
+    bounds
+}
+
+fn build_cut_segments(media: &crate::media::MediaState, session: &crate::media::CutSession) -> Vec<CutSegmentInfo> {
+    compute_cut_segment_bounds(session.duration_ms, &session.cut_points_ms)
+        .into_iter()
+        .enumerate()
+        .map(|(index, (start_ms, end_ms))| CutSegmentInfo {
+            index,
+            start_ms,
+            end_ms,
+            length_ms: end_ms - start_ms,
+            assigned_label: session.assignments.get(&index).and_then(|id| media.get_mappable_text(id)),
+        })
+        .collect()
+}
+
+pub fn start_cut(media: &MediaState, title_id: FileBackedTitleId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+
+    let Some(source_path) = media.get_file_backed_title_path(&title_id) else {
+        println!("start_cut: title not found: {:?}", title_id);
+        return vec![];
+    };
+
+    let Some(duration_secs) = probe_duration_seconds(&source_path) else {
+        println!("start_cut: could not probe duration for {:?}", source_path);
+        return vec![];
+    };
+    let duration_ms = (duration_secs * 1000.0) as u64;
+    let chapters_ms = probe_chapters(&source_path);
+
+    let session = crate::media::CutSession {
+        title_id: title_id.clone(),
+        source_path,
+        duration_ms,
+        chapters_ms: chapters_ms.clone(),
+        cut_points_ms: vec![],
+        assignments: std::collections::HashMap::new(),
+    };
+
+    let segments = build_cut_segments(&media, &session);
+    *media.cut_session.borrow_mut() = Some(session);
+
+    vec![
+        UiEvent::CutSessionStarted { title_id: title_id.0, duration_ms, chapters_ms },
+        UiEvent::SetCutSegments { segments },
+    ]
+}
+
+pub fn add_cut_point(media: &MediaState, position_ms: u64) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut session_ref = media.cut_session.borrow_mut();
+    let Some(session) = session_ref.as_mut() else { return vec![]; };
+
+    // Snap to the nearest chapter within the threshold, if any.
+    let mut snapped = position_ms;
+    let mut best_dist = CUT_SNAP_THRESHOLD_MS + 1;
+    for &c in &session.chapters_ms {
+        let dist = c.abs_diff(position_ms);
+        if dist < best_dist {
+            best_dist = dist;
+            snapped = c;
+        }
+    }
+    if best_dist > CUT_SNAP_THRESHOLD_MS {
+        snapped = position_ms;
+    }
+
+    // Reject degenerate points (too close to 0/duration/an existing cut point).
+    if snapped < CUT_MIN_GAP_MS || snapped > session.duration_ms.saturating_sub(CUT_MIN_GAP_MS) {
+        return vec![UiEvent::SetCutSegments { segments: build_cut_segments(&media, session) }];
+    }
+    if session.cut_points_ms.iter().any(|&p| p.abs_diff(snapped) < CUT_MIN_GAP_MS) {
+        return vec![UiEvent::SetCutSegments { segments: build_cut_segments(&media, session) }];
+    }
+
+    // Insertion index = count of existing points strictly less than `snapped`.
+    let ins = session.cut_points_ms.iter().filter(|&&p| p < snapped).count();
+
+    // The segment being split (`ins`) had an assignment that's now ambiguous -- drop
+    // it. Everything after it shifts up by one segment index.
+    let mut new_assignments = std::collections::HashMap::new();
+    for (idx, id) in session.assignments.drain() {
+        if idx < ins {
+            new_assignments.insert(idx, id);
+        } else if idx > ins {
+            new_assignments.insert(idx + 1, id);
+        }
+    }
+    session.assignments = new_assignments;
+    session.cut_points_ms.insert(ins, snapped);
+
+    vec![UiEvent::SetCutSegments { segments: build_cut_segments(&media, session) }]
+}
+
+pub fn remove_cut_point(media: &MediaState, index: usize) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut session_ref = media.cut_session.borrow_mut();
+    let Some(session) = session_ref.as_mut() else { return vec![]; };
+    if index >= session.cut_points_ms.len() {
+        return vec![];
+    }
+
+    session.cut_points_ms.remove(index);
+
+    // Segments `index` and `index+1` merge into one segment at `index`. Drop both
+    // sides' assignments (ambiguous which should win); shift everything after down by one.
+    let mut new_assignments = std::collections::HashMap::new();
+    for (idx, id) in session.assignments.drain() {
+        if idx < index {
+            new_assignments.insert(idx, id);
+        } else if idx > index + 1 {
+            new_assignments.insert(idx - 1, id);
+        }
+    }
+    session.assignments = new_assignments;
+
+    vec![UiEvent::SetCutSegments { segments: build_cut_segments(&media, session) }]
+}
+
+pub fn assign_cut_segment(media: &MediaState, segment_index: usize, to: MappableMediaId) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut session_ref = media.cut_session.borrow_mut();
+    let Some(session) = session_ref.as_mut() else { return vec![]; };
+    let n_segments = session.cut_points_ms.len() + 1;
+    if segment_index >= n_segments {
+        return vec![];
+    }
+
+    session.assignments.insert(segment_index, to);
+    vec![UiEvent::SetCutSegments { segments: build_cut_segments(&media, session) }]
+}
+
+pub fn unassign_cut_segment(media: &MediaState, segment_index: usize) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    let mut session_ref = media.cut_session.borrow_mut();
+    let Some(session) = session_ref.as_mut() else { return vec![]; };
+    session.assignments.remove(&segment_index);
+    vec![UiEvent::SetCutSegments { segments: build_cut_segments(&media, session) }]
+}
+
+pub fn cancel_cut(media: &MediaState) -> Vec<UiEvent> {
+    let media = unlock_media!(media);
+    *media.cut_session.borrow_mut() = None;
+    vec![UiEvent::CutSessionEnded]
+}
+
+/// Runs the user's `${in}`/`${out}` ffmpeg template against a single trimmed segment of
+/// `source_path`, writing directly to `dest_path`. Reuses the same `split_shell_command` +
+/// substitution convention as `reencode_tv_episode`/`reencode_film_video`, but additionally
+/// splices `-ss`/`-t` around the located `-i <input>` pair so only the segment is encoded.
+fn run_ffmpeg_segment(
+    source_path: &std::path::Path,
+    dest_path: &std::path::Path,
+    start_ms: u64,
+    end_ms: u64,
+    command_str: &str,
+    on_progress: &impl Fn(UiEvent),
+) -> Result<(), String> {
+    let args = split_shell_command(command_str);
+    if args.is_empty() {
+        return Err("Empty ffmpeg command template".to_string());
+    }
+
+    let in_str = source_path.to_string_lossy().to_string();
+    let out_str = dest_path.to_string_lossy().to_string();
+
+    let substituted: Vec<String> = args.iter().map(|a| {
+        a.replace("${in}", &in_str).replace("${out}", &out_str)
+    }).collect();
+
+    // Locate the exact "-i <in_str>" pair so -ss/-t can be spliced around it.
+    let Some(j) = substituted.iter().position(|a| a == &in_str) else {
+        return Err(format!("Could not find input path {:?} in substituted command", in_str));
+    };
+    if j == 0 || substituted[j - 1] != "-i" {
+        return Err(format!(
+            "Expected '-i' immediately before the input path (found {:?} instead); cannot splice -ss/-t into this template",
+            if j > 0 { substituted[j - 1].as_str() } else { "<nothing>" }
+        ));
+    }
+
+    let start_s = start_ms as f64 / 1000.0;
+    let dur_s = (end_ms - start_ms) as f64 / 1000.0;
+
+    let mut spliced: Vec<String> = Vec::with_capacity(substituted.len() + 4);
+    spliced.extend_from_slice(&substituted[..j - 1]);
+    spliced.push("-ss".to_string());
+    spliced.push(format!("{:.3}", start_s));
+    spliced.extend_from_slice(&substituted[j - 1..=j]);
+    spliced.push("-t".to_string());
+    spliced.push(format!("{:.3}", dur_s));
+    spliced.extend_from_slice(&substituted[j + 1..]);
+
+    // Ensure -stats/-y are present for progress reporting, matching reencode's convention.
+    if spliced[0].contains("ffmpeg") {
+        if !spliced.iter().any(|a| a == "-stats") {
+            spliced.push("-stats".to_string());
+        }
+        if !spliced.iter().any(|a| a == "-y") {
+            spliced.push("-y".to_string());
+        }
+    }
+
+    if let Some(parent) = dest_path.parent() {
+        if let Err(e) = fs::create_dir_all(parent) {
+            return Err(format!("Could not create {:?}: {:?}", parent, e));
+        }
+    }
+
+    let mut cmd = std::process::Command::new(&spliced[0]);
+    for arg in &spliced[1..] {
+        cmd.arg(arg);
+    }
+
+    println!("[rust] Executing cut segment: {:?}", cmd);
+
+    match cmd.stderr(Stdio::piped()).spawn() {
+        Ok(mut child) => {
+            if let Some(stderr) = child.stderr.take() {
+                handle_ffmpeg_progress(stderr, on_progress, Some(dur_s));
+            }
+            match child.wait() {
+                Ok(s) if s.success() => Ok(()),
+                Ok(s) => {
+                    let _ = fs::remove_file(dest_path);
+                    Err(format!("ffmpeg exited with status {:?}", s))
+                }
+                Err(e) => {
+                    let _ = fs::remove_file(dest_path);
+                    Err(format!("failed to wait for ffmpeg: {:?}", e))
+                }
+            }
+        }
+        Err(e) => Err(format!("failed to spawn ffmpeg: {:?}", e)),
+    }
+}
+
+/// Snapshots and clears the active cut session, encodes each segment (assigned segments go
+/// straight to their show/film's canonical output path; unassigned segments get a plain new
+/// file alongside the source), and rescans local media once at the end. The original combined
+/// source is only retired (renamed to `.d`) if every segment succeeded, so a partial failure
+/// leaves it intact for a retry.
+pub fn process_cuts(media: &MediaState, command_str: String, on_progress: impl Fn(UiEvent)) -> Vec<UiEvent> {
+    let session = {
+        let m = unlock_media!(media);
+        m.cut_session.borrow_mut().take()
+    };
+    let Some(session) = session else { return vec![]; };
+
+    on_progress(UiEvent::CutSessionEnded);
+
+    let bounds = compute_cut_segment_bounds(session.duration_ms, &session.cut_points_ms);
+    let source_stem = session.source_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let source_parent = session.source_path.parent().map(|p| p.to_path_buf())
+        .unwrap_or_else(|| session.source_path.clone());
+
+    let mut all_succeeded = true;
+    let mut unassigned_counter = 0usize;
+
+    for (index, (start_ms, end_ms)) in bounds.into_iter().enumerate() {
+        let assignment = session.assignments.get(&index).cloned();
+
+        let dest_path: Option<PathBuf> = match &assignment {
+            Some(MappableMediaId::TvEpisode(ep_id)) => {
+                let m = unlock_media!(media);
+                let info = {
+                    let episodes = m.tv_show_episodes.borrow();
+                    episodes.iter().find(|e| e.id == *ep_id)
+                        .and_then(|e| m.tv_show_key(&e.show_id).map(|sk| (sk, e.series_key.clone())))
+                };
+                match info {
+                    Some((show_key, series_key)) => {
+                        Some(m.media_dir.join("output").join(show_key).join(format!("{}.mkv", series_key)))
+                    }
+                    None => {
+                        on_progress(UiEvent::FfmpegOutput(format!("Error: could not resolve TV episode for segment {}", index)));
+                        all_succeeded = false;
+                        None
+                    }
+                }
+            }
+            Some(MappableMediaId::FilmVideo(fv_id)) => {
+                let m = unlock_media!(media);
+                let rel = m.film_videos.borrow().iter().find(|v| v.id == *fv_id).map(|v| v.get_ideal_storage_path());
+                match rel {
+                    Some(parts) => {
+                        let mut p = m.media_dir.join("output");
+                        for part in parts { p = p.join(part); }
+                        Some(p)
+                    }
+                    None => {
+                        on_progress(UiEvent::FfmpegOutput(format!("Error: could not resolve film video for segment {}", index)));
+                        all_succeeded = false;
+                        None
+                    }
+                }
+            }
+            None => {
+                unassigned_counter += 1;
+                Some(source_parent.join(format!("{} - Cut {}.mkv", source_stem, unassigned_counter)))
+            }
+        };
+
+        let Some(dest_path) = dest_path else { continue; };
+
+        if dest_path.exists() {
+            on_progress(UiEvent::FfmpegOutput(format!(
+                "Error: destination already exists, skipping segment {}: {:?}", index, dest_path
+            )));
+            all_succeeded = false;
+            continue;
+        }
+
+        on_progress(UiEvent::FfmpegOutput(format!("Cutting segment {} -> {:?}", index, dest_path)));
+
+        if let Err(e) = run_ffmpeg_segment(&session.source_path, &dest_path, start_ms, end_ms, &command_str, &on_progress) {
+            on_progress(UiEvent::FfmpegOutput(format!("Error: segment {} failed: {}", index, e)));
+            all_succeeded = false;
+        }
+    }
+
+    if all_succeeded {
+        let new_path = format!("{}.d", session.source_path.to_string_lossy());
+        if let Err(e) = fs::rename(&session.source_path, &new_path) {
+            println!("[rust] Failed to rename {:?} to {}: {:?}", session.source_path, new_path, e);
+        }
+    }
+
+    read_local_media(media)
 }

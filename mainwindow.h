@@ -1,4 +1,5 @@
 #include <filesystem>
+#include <cstdint>
 #include <unordered_map>
 #include <QMainWindow>
 #include <QStandardItemModel>
@@ -66,6 +67,7 @@ private:
 	int rsyncActiveCount = 0;
 	int copyQueueCount = 0;
 	int copyActiveCount = 0;
+	bool _mCutModeActive = false;
 	QTimer *spinnerTimer = nullptr;
 	int spinnerIndex = 0;
 	QTimer *usbStatusTimer = nullptr;
@@ -86,6 +88,8 @@ private:
 	bool _rsyncAfterEncode = false;
 	QString _encodeCommand;
 	QString _encodePresetLabel;
+	bool _mkvmergeRemuxEnabled = true;
+	QString _mkvmergeCommand;
 
 	// Maps an in-flight ffmpeg job's id (episode/film-video id) to the
 	// show/film id to rsync once it completes, when "Rsync after encode" is
@@ -115,6 +119,8 @@ private:
 	void _clearMetadataPanel();
 	void _loadInPlayer(QString path);
 	void _selectSeekableAudioTrack();
+	void _populateAudioTrackCombo();
+	bool _mPopulatingAudioTrackCombo = false;
 	QString _vlcProgram;
 	QStringList _vlcArgs;
 	bool _vlcFound = false;
@@ -135,8 +141,8 @@ extern "C" {
 	// Commands that the worker thread can work.
 	void initial_load();
 	void file_inventory();
-	void lookup_film(const char* id, const char* api_key);
-	void lookup_tv(const char* id, const char* api_key);
+	void lookup_film(const char* id, const char* api_key, bool skip_special_features);
+	void lookup_tv(const char* id, const char* api_key, bool skip_season_0);
 	void rsync_show(const char* show_id, const char* tv_location, const char* movie_location);
 	void rsync_from_nas(const char* show_id, const char* tv_location, const char* movie_location);
 	void portable_encode(const char* id);
@@ -155,8 +161,8 @@ extern "C" {
  void match_scan(const char* id, const char* command);
 	void fetch_tmdb_still(const char* id, bool is_tv);
 	void fetch_mkv_info(const char* path);
-	void reencode_tv_episode(const char* id, const char* command);
-	void reencode_film_video(const char* id, const char* command);
+	void reencode_tv_episode(const char* id, const char* command, bool mkvmerge_enabled, const char* mkvmerge_command);
+	void reencode_film_video(const char* id, const char* command, bool mkvmerge_enabled, const char* mkvmerge_command);
 	void delete_title(const char* id);
 	void undelete_title(const char* id);
 	void collect_garbage();
@@ -168,6 +174,13 @@ extern "C" {
 	void reorder_stitch(size_t from, size_t to);
 	void clear_stitch();
 	void perform_stitch();
+	void start_cut(const char* title_id);
+	void add_cut_point(std::uint64_t position_ms);
+	void remove_cut_point(size_t index);
+	void assign_cut_segment(size_t segment_index, const char* media_id, bool is_tv);
+	void unassign_cut_segment(size_t segment_index);
+	void cancel_cut();
+	void process_cuts(const char* command);
 
 	bool has_original_for_tv_episode(const char* id);
 	bool has_original_for_film_video(const char* id);

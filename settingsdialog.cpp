@@ -36,6 +36,8 @@ const EncodeTemplate kEncodeTemplates[] = {
     {"NVENC (AV1)", "NVENC AV1", "ffmpeg -hwaccel cuda -i ${in} -map 0 -c:v av1_nvenc -preset p7 -rc vbr -cq 18 -pix_fmt p010le -c:a copy -c:s copy -c:d copy ${out}"},
 };
 constexpr int kDefaultEncodeTemplateIndex = 1; // NVENC (HEVC)
+
+const char* kDefaultMkvmergeCommand = "mkvmerge -o ${out} --no-audio --no-subtitles --no-chapters ${video} --no-video ${in}";
 }
 
 SettingsDialog::SettingsDialog(MainWindow *parent, int initialCategory)
@@ -124,6 +126,8 @@ void SettingsDialog::_loadCurrentValues() {
 
     ui->preprocessorTemplates->setCurrentIndex(kDefaultEncodeTemplateIndex);
     ui->preprocessorCommand->setText(kEncodeTemplates[kDefaultEncodeTemplateIndex].command);
+    ui->mkvmergeRemuxCheckbox->setChecked(true);
+    ui->mkvmergeCommandEdit->setText(kDefaultMkvmergeCommand);
     {
         std::ifstream file(configDir() + "/encode.json");
         if (file.is_open()) {
@@ -136,6 +140,9 @@ void SettingsDialog::_loadCurrentValues() {
                 }
                 auto command = j.value("command", std::string(kEncodeTemplates[kDefaultEncodeTemplateIndex].command));
                 ui->preprocessorCommand->setText(QString::fromStdString(command));
+                ui->mkvmergeRemuxCheckbox->setChecked(j.value("mkvmerge_remux_enabled", true));
+                auto mkvmergeCommand = j.value("mkvmerge_command", std::string(kDefaultMkvmergeCommand));
+                ui->mkvmergeCommandEdit->setText(QString::fromStdString(mkvmergeCommand));
             } catch (...) {}
         }
     }
@@ -260,6 +267,8 @@ void SettingsDialog::_saveEncode() {
     j["template_index"] = index;
     j["template_label"] = kEncodeTemplates[index].shortLabel;
     j["command"] = ui->preprocessorCommand->text().toStdString();
+    j["mkvmerge_remux_enabled"] = ui->mkvmergeRemuxCheckbox->isChecked();
+    j["mkvmerge_command"] = ui->mkvmergeCommandEdit->text().toStdString();
     fs::create_directories(configDir());
     std::ofstream out(configDir() + "/encode.json");
     out << j.dump(2);

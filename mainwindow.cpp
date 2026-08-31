@@ -6,8 +6,13 @@
 #include <QAction>
 #include <QAudioOutput>
 #include <QProcess>
-#include <QInputDialog>
+#include <QDialog>
+#include <QLineEdit>
+#include <QCheckBox>
+#include <QFormLayout>
+#include <QDialogButtonBox>
 #include <QFileDialog>
+#include <QMessageBox>
 #include <QPixmap>
 #include <QSettings>
 #include <QDateTime>
@@ -256,11 +261,56 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
         menu.exec(ui->stitchList->viewport()->mapToGlobal(pos));
     });
 
+    connect(ui->cutBtn, &QPushButton::clicked, this, [this]() {
+        add_cut_point((quint64)player->position());
+    });
+
+    connect(ui->cutAssignBtn, &QPushButton::clicked, this, [this]() {
+        auto row = ui->cutSegmentsTable->currentRow();
+        if (row < 0) return;
+        auto isTv = ui->tmdbModeBtn->text() == "TV";
+        auto to = isTv ? _getIdForSelectedItemInTree(ui->showsTree) : _getIdForSelectedItemInTree(ui->filmsTree);
+        if (to.empty()) return;
+        assign_cut_segment((size_t)row, to.c_str(), isTv);
+    });
+
+    connect(ui->cutProcessBtn, &QPushButton::clicked, this, [this]() {
+        auto command = _encodeCommand.toStdString();
+        process_cuts(command.c_str());
+        this->ffmpegQueueCount++;
+        this->_updateFfmpegStatus();
+    });
+
+    connect(ui->cutCancelBtn, &QPushButton::clicked, this, [this]() {
+        cancel_cut();
+    });
+
+    ui->cutSegmentsTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(ui->cutSegmentsTable, &QWidget::customContextMenuRequested, this, [this](const QPoint &pos) {
+        auto row = ui->cutSegmentsTable->rowAt(pos.y());
+        QMenu menu;
+        if (row >= 0) {
+            auto unassignAction = menu.addAction(q("Unassign"));
+            connect(unassignAction, &QAction::triggered, [row]() { unassign_cut_segment((size_t)row); });
+            auto removeAction = menu.addAction(q("Remove Cut Point Before This Segment"));
+            removeAction->setEnabled(row > 0);
+            connect(removeAction, &QAction::triggered, [row]() { remove_cut_point((size_t)(row - 1)); });
+        }
+        menu.exec(ui->cutSegmentsTable->viewport()->mapToGlobal(pos));
+    });
+
     ui->disksTree->setRootIsDecorated(false);
     ui->disksTree->setItemsExpandable(false);
 
     auto handleTsSeek = [&](const QModelIndex &index) {
-        _mRequestedPlayerPosition = 0;
+        // _mRequestedPlayerPosition is intentionally left alone here: it
+        // already holds wherever the player last landed (either from the
+        // previous title's auto-seek or a manual seek), so leaving it
+        // untouched is what carries the playback position forward across
+        // title switches (many shows have consistent title cards at a
+        // non-zero offset, which makes this useful for identification). A
+        // match-scan "ts=" marker below overrides it for this title only.
+        qDebug() << "[pos-debug] handleTsSeek entry, index.isValid()=" << index.isValid() << "_mRequestedPlayerPosition=" << _mRequestedPlayerPosition;
         if (!index.isValid()) return;
         auto text = index.data(Qt::DisplayRole).toString().toStdString();
         size_t tsPos = text.find("ts=");
@@ -270,12 +320,15 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
             std::string tsStr = text.substr(tsPos + 3, endPos - (tsPos + 3));
             try {
                 _mRequestedPlayerPosition = std::stoll(tsStr);
+                qDebug() << "[pos-debug] handleTsSeek: ts= override, _mRequestedPlayerPosition=" << _mRequestedPlayerPosition;
             } catch (...) {}
         }
     };
 
     // When selecting an entry on the disks tree, load item in player.
     connect(ui->disksTree->selectionModel(), &QItemSelectionModel::selectionChanged, [this, handleTsSeek](const QItemSelection &selected, const QItemSelection &) {
+        qDebug() << "[pos-debug] disksTree selectionChanged, selected.indexes().isEmpty()=" << selected.indexes().isEmpty() << "_mRequestedPlayerPosition=" << _mRequestedPlayerPosition;
+        if (_mCutModeActive) cancel_cut();
         if (!selected.indexes().isEmpty()) {
             auto index = selected.indexes().first();
             handleTsSeek(index);
@@ -292,7 +345,12 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
 
             _loadInPlayer(q(path));
         } else {
-            _mRequestedPlayerPosition = 0;
+            // Note: deliberately not resetting _mRequestedPlayerPosition
+            // here. Qt can emit an intermediate selectionChanged with an
+            // empty `selected` set while transitioning between rows (a
+            // "deselect old" step ahead of "select new"), and zeroing here
+            // would wipe out the carried-over position before the real
+            // selection lands.
             _mSeekPending = true;
         }
     });
@@ -323,7 +381,8 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
                 }
             }
         } else {
-            _mRequestedPlayerPosition = 0;
+            // See the disksTree handler above for why we don't reset
+            // _mRequestedPlayerPosition here.
             _mSeekPending = true;
             _clearMetadataPanel();
         }
@@ -355,7 +414,8 @@ void MainWindow::setAppModel(AppModel *theModel, std::string mediaDir) {
                 }
             }
         } else {
-            _mRequestedPlayerPosition = 0;
+            // See the disksTree handler above for why we don't reset
+            // _mRequestedPlayerPosition here.
             _mSeekPending = true;
             _clearMetadataPanel();
         }
@@ -370,6 +430,8 @@ MainWindow::MainWindow(QWidget *parent)
     ui->rsyncStatusWidget->setMinimumHeight(30);
     ui->copyStatusWidget->setMinimumHeight(30);
     ui->stitchGroup->hide();
+    ui->cutBtn->hide();
+    ui->cutGroup->hide();
     _loadEmbySettings();
     _loadUsbCopySettings();
     _loadEncodeSettings();
@@ -435,46 +497,75 @@ MainWindow::MainWindow(QWidget *parent)
     player->setVideoOutput(ui->videoWidget);
     player->setAudioOutput(audioOutput);
     connect(player, &QMediaPlayer::durationChanged, [&](qint64 v) {
+        // Seeking is handled in the mediaStatusChanged handler below, once
+        // the backend actually reports the media as loaded/seekable.
+        // durationChanged can fire earlier than that (while still
+        // LoadingMedia), and a setPosition() issued that early gets
+        // silently dropped by the FFmpeg backend, so don't attempt it here.
         ui->videoSeek->setMaximum(v);
-        if (_mSeekPending && v > 0) {
-            _mSeekPending = false;
-            qint64 requested = _mRequestedPlayerPosition;
-            if (v > 15000 && requested > v - 10000) {
-                requested = v - 10000;
-            }
-            player->setPosition(requested);
-        }
     });
     connect(player, &QMediaPlayer::positionChanged, [&](qint64 v) {
         ui->videoSeek->setValue(v);
         ui->seekPos->setText(q(std::format("{}", v)));
+        qDebug() << "[pos-debug] positionChanged v=" << v;
     });
+    // These are the only places the user directly moves the playhead, so
+    // they're also the only places we update _mRequestedPlayerPosition
+    // (besides the auto-seek machinery itself and the match-scan "ts="
+    // override) — that's what gets carried forward to the next title on
+    // switch. We deliberately don't try to infer "the current position"
+    // from the player's own positionChanged signal: stop()/setSource() on
+    // the old title and the new title's loading can emit positionChanged
+    // events out of order, and there is no reliable way to tell a stale one
+    // apart from a real confirmation.
     connect(ui->videoSeek, &QSlider::sliderMoved, [&](int v) {
         player->setPosition(v);
         ui->seekPos->setText(q(std::format("{}", (qint64)v)));
+        _mRequestedPlayerPosition = v;
+        qDebug() << "[pos-debug] sliderMoved v=" << v << "_mRequestedPlayerPosition=" << _mRequestedPlayerPosition;
     });
     connect(ui->seekFwd, &QPushButton::clicked, [&] {
-        auto pos = player->position();
-        player->setPosition(pos + 42);
+        auto pos = player->position() + 42;
+        player->setPosition(pos);
+        _mRequestedPlayerPosition = pos;
     });
     connect(ui->seekRev, &QPushButton::clicked, [&] {
-        auto pos = player->position();
-        player->setPosition(pos - 42);
+        auto pos = player->position() - 42;
+        player->setPosition(pos);
+        _mRequestedPlayerPosition = pos;
     });
 
     // Media player, when the content loads, skip to requested position.
+    connect(ui->audioTrackCombo, &QComboBox::currentIndexChanged, [&](int index) {
+        if (_mPopulatingAudioTrackCombo || index < 0) return;
+        player->setActiveAudioTrack(index);
+    });
+
     connect(player, &QMediaPlayer::mediaStatusChanged, [&](QMediaPlayer::MediaStatus status) {
+        qDebug() << "[pos-debug] mediaStatusChanged status=" << status << "_mSeekPending=" << _mSeekPending << "_mRequestedPlayerPosition=" << _mRequestedPlayerPosition;
         if (status == QMediaPlayer::LoadedMedia || status == QMediaPlayer::BufferedMedia) {
             _selectSeekableAudioTrack();
+            _populateAudioTrackCombo();
             if (_mSeekPending) {
                 auto maximum = player->duration();
                 if (maximum > 0) {
-                    _mSeekPending = false;
                     auto requested = _mRequestedPlayerPosition;
                     if (maximum > 15000 && requested > maximum - 10000) {
                         requested = maximum - 10000;
                     }
+                    qDebug() << "[pos-debug] mediaStatusChanged: seeking to" << requested;
                     player->setPosition(requested);
+                    // Don't clear _mSeekPending on the first LoadedMedia:
+                    // this backend can spontaneously drop back into
+                    // LoadingMedia and reset position to 0 right after a
+                    // seek lands (seeking past what's currently buffered
+                    // seems to trigger a re-open), and if we call this a
+                    // one-shot job that reset is never corrected. Keep
+                    // reissuing the seek on every Loaded/BufferedMedia we
+                    // see until we reach the stable BufferedMedia state.
+                    if (status == QMediaPlayer::BufferedMedia) {
+                        _mSeekPending = false;
+                    }
                 }
             }
         }
@@ -523,6 +614,15 @@ MainWindow::MainWindow(QWidget *parent)
             QAction * addToStitchAction = menu.addAction(q("Add to Stitch"));
             connect(addToStitchAction, &QAction::triggered, [path]() {
                 add_to_stitch(path.c_str());
+            });
+
+            QAction * startCutAction = menu.addAction(q("Start Cut"));
+            connect(startCutAction, &QAction::triggered, [this, path, titleId]() {
+                if (_mCutModeActive) {
+                    cancel_cut();
+                }
+                _loadInPlayer(QString::fromStdString(path));
+                start_cut(titleId.c_str());
             });
         }
 
@@ -677,7 +777,8 @@ MainWindow::MainWindow(QWidget *parent)
 
             connect(reencodeAction, &QAction::triggered, [this, episodeId, showId]() {
                 auto command = _encodeCommand.toStdString();
-                reencode_tv_episode(episodeId.c_str(), command.c_str());
+                auto mkvmergeCommand = _mkvmergeCommand.toStdString();
+                reencode_tv_episode(episodeId.c_str(), command.c_str(), _mkvmergeRemuxEnabled, mkvmergeCommand.c_str());
                 this->_encodeUploadTargets[episodeId] = showId;
                 this->ffmpegQueueCount++;
                 this->_updateFfmpegStatus();
@@ -732,6 +833,7 @@ MainWindow::MainWindow(QWidget *parent)
             std::string uploadShowId = model->data(showIndex, Qt::UserRole).toString().toStdString();
             int rows = model->rowCount(showIndex);
             auto command = _encodeCommand.toStdString();
+            auto mkvmergeCommand = _mkvmergeCommand.toStdString();
             for (int i = 0; i < rows; ++i) {
                 QModelIndex epIndex = model->index(i, 0, showIndex);
                 std::string epId = model->data(epIndex, Qt::UserRole).toString().toStdString();
@@ -742,7 +844,7 @@ MainWindow::MainWindow(QWidget *parent)
                 if (!fileName) continue;
                 free_string(fileName);
 
-                reencode_tv_episode(epId.c_str(), command.c_str());
+                reencode_tv_episode(epId.c_str(), command.c_str(), _mkvmergeRemuxEnabled, mkvmergeCommand.c_str());
                 this->_encodeUploadTargets[epId] = uploadShowId;
                 this->ffmpegQueueCount++;
             }
@@ -874,7 +976,8 @@ MainWindow::MainWindow(QWidget *parent)
 
             connect(reencodeAction, &QAction::triggered, [this, filmVideoId, filmId]() {
                 auto command = _encodeCommand.toStdString();
-                reencode_film_video(filmVideoId.c_str(), command.c_str());
+                auto mkvmergeCommand = _mkvmergeCommand.toStdString();
+                reencode_film_video(filmVideoId.c_str(), command.c_str(), _mkvmergeRemuxEnabled, mkvmergeCommand.c_str());
                 this->_encodeUploadTargets[filmVideoId] = filmId;
                 this->ffmpegQueueCount++;
                 this->_updateFfmpegStatus();
@@ -952,20 +1055,51 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->tmdbFetchBtn, &QPushButton::clicked, [&]() {
-        bool ok = false;
-        auto idText = QInputDialog::getText(this, "TMDB Lookup", "TMDB ID:",
-            QLineEdit::Normal, QString(), &ok);
-        if (!ok || idText.isEmpty()) return;
+        bool isTv = ui->tmdbModeBtn->text() == "TV";
 
-        auto idEdit = idText.toStdString();
+        QSettings settings;
+        bool skipSeason0 = settings.value("tmdb/skipSeason0", false).toBool();
+        bool skipSpecialFeatures = settings.value("tmdb/skipSpecialFeatures", false).toBool();
+
+        QDialog dlg(this);
+        dlg.setWindowTitle("TMDB Lookup");
+
+        auto *idEdit = new QLineEdit(&dlg);
+        auto *skipSeason0Check = new QCheckBox("Skip season 0", &dlg);
+        skipSeason0Check->setChecked(skipSeason0);
+        skipSeason0Check->setVisible(isTv);
+        auto *skipSpecialFeaturesCheck = new QCheckBox("Skip special features", &dlg);
+        skipSpecialFeaturesCheck->setChecked(skipSpecialFeatures);
+        skipSpecialFeaturesCheck->setVisible(!isTv);
+
+        auto *buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+        connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+        connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+        auto *layout = new QFormLayout(&dlg);
+        layout->addRow("TMDB ID:", idEdit);
+        layout->addRow(skipSeason0Check);
+        layout->addRow(skipSpecialFeaturesCheck);
+        layout->addRow(buttons);
+
+        if (dlg.exec() != QDialog::Accepted) return;
+
+        skipSeason0 = skipSeason0Check->isChecked();
+        skipSpecialFeatures = skipSpecialFeaturesCheck->isChecked();
+        settings.setValue("tmdb/skipSeason0", skipSeason0);
+        settings.setValue("tmdb/skipSpecialFeatures", skipSpecialFeatures);
+
+        if (idEdit->text().isEmpty()) return;
+
+        auto idStd = idEdit->text().toStdString();
         auto apiKeyEdit = _tmdbApiKey.toStdString();
-        auto id = idEdit.c_str();
+        auto id = idStd.c_str();
         auto apiKey = apiKeyEdit.c_str();
 
-        if (ui->tmdbModeBtn->text() == "TV") {
-            lookup_tv(id, apiKey);
+        if (isTv) {
+            lookup_tv(id, apiKey, skipSeason0);
         } else {
-            lookup_film(id, apiKey);
+            lookup_film(id, apiKey, skipSpecialFeatures);
         }
     });
 
@@ -1007,23 +1141,27 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     connect(ui->importBtn, &QPushButton::clicked, [&]() {
-        // QFileDialog has no built-in "file or folder" mode. Forcing the
-        // non-native dialog into Directory mode with ShowDirsOnly off lists
-        // files alongside folders and still lets Choose accept a highlighted
-        // file, so a single dialog can pick either.
-        QFileDialog dialog(this, "Import File or Folder");
-        dialog.setFileMode(QFileDialog::Directory);
-        dialog.setOption(QFileDialog::DontUseNativeDialog, true);
-        dialog.setOption(QFileDialog::ShowDirsOnly, false);
-        dialog.setNameFilter("Video files (*.mkv *.webm)");
+        // QFileDialog has no built-in "file or folder" mode, and the closest hack
+        // (Directory mode with ShowDirsOnly off) still disables Choose the moment
+        // a file is highlighted - Qt's own internal slot re-disables it based on
+        // fileMode, so it can't be fixed by re-enabling it ourselves. Offer a
+        // small menu of two native dialogs instead.
+        QMenu menu;
+        auto fileAction = menu.addAction(q("Import File..."));
+        auto folderAction = menu.addAction(q("Import Folder..."));
+        auto chosen = menu.exec(ui->importBtn->mapToGlobal(QPoint(0, ui->importBtn->height())));
+        if (!chosen) return;
 
-        if (dialog.exec() != QDialog::Accepted) return;
+        QString path;
+        if (chosen == fileAction) {
+            path = QFileDialog::getOpenFileName(this, "Import File", QString(), "Video files (*.mkv *.webm)");
+        } else if (chosen == folderAction) {
+            path = QFileDialog::getExistingDirectory(this, "Import Folder");
+        }
+        if (path.isEmpty()) return;
 
-        auto selected = dialog.selectedFiles();
-        if (selected.isEmpty()) return;
-
-        auto path = selected.first().toStdString();
-        import_path(path.c_str());
+        auto pathStd = path.toStdString();
+        import_path(pathStd.c_str());
         this->copyQueueCount++;
         this->_updateCopyStatus();
     });
@@ -1422,6 +1560,8 @@ void MainWindow::_loadUsbCopySettings() {
 void MainWindow::_loadEncodeSettings() {
     _encodeCommand = "ffmpeg -hwaccel cuda -i ${in} -map 0 -c:v hevc_nvenc -preset p7 -rc vbr -cq 18 -pix_fmt p010le -c:a copy -c:s copy -c:d copy ${out}";
     _encodePresetLabel = "NVENC HEVC";
+    _mkvmergeRemuxEnabled = true;
+    _mkvmergeCommand = "mkvmerge -o ${out} --no-audio --no-subtitles --no-chapters ${video} --no-video ${in}";
 
     auto path = QDir::homePath().toStdString() + "/.config/rkworkbench/encode.json";
     std::ifstream file(path);
@@ -1432,6 +1572,8 @@ void MainWindow::_loadEncodeSettings() {
         auto j = json::parse(contents);
         _encodeCommand = q(j.value("command", _encodeCommand.toStdString()));
         _encodePresetLabel = q(j.value("template_label", _encodePresetLabel.toStdString()));
+        _mkvmergeRemuxEnabled = j.value("mkvmerge_remux_enabled", _mkvmergeRemuxEnabled);
+        _mkvmergeCommand = q(j.value("mkvmerge_command", _mkvmergeCommand.toStdString()));
     } catch (const std::exception& e) {
         qDebug() << "Failed to parse encode config:" << e.what();
     }
@@ -1593,8 +1735,42 @@ void MainWindow::_selectSeekableAudioTrack() {
     }
 }
 
+void MainWindow::_populateAudioTrackCombo() {
+    _mPopulatingAudioTrackCombo = true;
+    ui->audioTrackCombo->clear();
+
+    auto tracks = player->audioTracks();
+    for (int i = 0; i < tracks.size(); i++) {
+        QString label = QString("Track %1").arg(i + 1);
+
+        QString lang = tracks[i].stringValue(QMediaMetaData::Language);
+        if (!lang.isEmpty()) label += QString(" - %1").arg(lang);
+
+        auto codec = tracks[i].value(QMediaMetaData::AudioCodec);
+        if (codec.isValid()) {
+            label += QString(" (%1)").arg(QMediaFormat::audioCodecName(codec.value<QMediaFormat::AudioCodec>()));
+        }
+
+        QString title = tracks[i].stringValue(QMediaMetaData::Title);
+        if (!title.isEmpty()) label += QString(" - %1").arg(title);
+
+        ui->audioTrackCombo->addItem(label);
+    }
+
+    ui->audioTrackCombo->setEnabled(tracks.size() > 1);
+
+    int active = player->activeAudioTrack();
+    if (active >= 0 && active < ui->audioTrackCombo->count()) {
+        ui->audioTrackCombo->setCurrentIndex(active);
+    }
+
+    _mPopulatingAudioTrackCombo = false;
+}
+
 void MainWindow::_loadInPlayer(QString path) {
+    qDebug() << "[pos-debug] _loadInPlayer(" << path << ") _mRequestedPlayerPosition=" << _mRequestedPlayerPosition;
     player->stop();
+    ui->audioTrackCombo->clear();
     player->setSource(QUrl::fromLocalFile(path));
     player->setPlaybackRate(1.0);
     player->play();
@@ -1689,6 +1865,12 @@ void MainWindow::processMessage(std::string message) {
                 ffmpegActiveCount++;
                 _updateFfmpegStatus();
             }
+            if (req.contains("ProcessCuts")) {
+                currentEncodingFile = "Cut Operation";
+                ffmpegQueueCount = std::max(0, ffmpegQueueCount - 1);
+                ffmpegActiveCount++;
+                _updateFfmpegStatus();
+            }
             if (req.contains("CopyFromUsb") || req.contains("ImportPath")) {
                 lastCopyOutput = "";
                 copyQueueCount = std::max(0, copyQueueCount - 1);
@@ -1701,7 +1883,7 @@ void MainWindow::processMessage(std::string message) {
     try {
         if (m.contains("CommandCompleted")) {
             auto req = m["CommandCompleted"];
-            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest") || req.contains("MatchScan") || req == "PerformStitch" || req.contains("PortableEncodeRequest")) {
+            if (req.contains("ReencodeRequest") || req.contains("ReencodeFilmRequest") || req.contains("MatchScan") || req == "PerformStitch" || req.contains("PortableEncodeRequest") || req.contains("ProcessCuts")) {
                 ffmpegActiveCount = std::max(0, ffmpegActiveCount - 1);
                 bool encodeFailed = lastFfmpegOutput.starts_with("Error:");
                 if (ffmpegActiveCount == 0) {
@@ -1951,10 +2133,64 @@ void MainWindow::processMessage(std::string message) {
         }
     } catch (...) {}
 
+    try {
+        if (m.contains("CutSessionStarted")) {
+            auto chaptersMsVec = m["CutSessionStarted"]["chapters_ms"].get<std::vector<qint64>>();
+            _mCutModeActive = true;
+            ui->cutBtn->show();
+            ui->cutGroup->show();
+            QVector<qint64> chapters(chaptersMsVec.begin(), chaptersMsVec.end());
+            ui->videoSeek->setChapterMarksMs(chapters);
+        }
+    } catch (...) {}
+
+    try {
+        if (m.contains("CutSessionEnded")) {
+            _mCutModeActive = false;
+            ui->cutBtn->hide();
+            ui->cutGroup->hide();
+            ui->cutSegmentsTable->setRowCount(0);
+            ui->videoSeek->setChapterMarksMs({});
+            ui->videoSeek->setCutPointMarksMs({});
+        }
+    } catch (...) {}
+
+    try {
+        if (m.contains("SetCutSegments")) {
+            auto segments = m["SetCutSegments"]["segments"];
+            ui->cutSegmentsTable->setRowCount(0);
+            QVector<qint64> cutPoints;
+            int n = (int)segments.size();
+            for (int i = 0; i < n; ++i) {
+                auto seg = segments[i];
+                qint64 startMs = seg["start_ms"].get<qint64>();
+                qint64 endMs = seg["end_ms"].get<qint64>();
+                qint64 lenMs = seg["length_ms"].get<qint64>();
+                std::string label = seg["assigned_label"].is_null() ? "" : seg["assigned_label"].get<std::string>();
+
+                int row = ui->cutSegmentsTable->rowCount();
+                ui->cutSegmentsTable->insertRow(row);
+                ui->cutSegmentsTable->setItem(row, 0, new QTableWidgetItem(q(std::format("{}", startMs))));
+                ui->cutSegmentsTable->setItem(row, 1, new QTableWidgetItem(q(std::format("{}", endMs))));
+                ui->cutSegmentsTable->setItem(row, 2, new QTableWidgetItem(q(std::format("{}", lenMs))));
+                ui->cutSegmentsTable->setItem(row, 3, new QTableWidgetItem(q(label)));
+
+                if (i < n - 1) cutPoints.append(endMs);
+            }
+            ui->videoSeek->setCutPointMarksMs(cutPoints);
+        }
+    } catch (...) {}
 
     try {
         auto garbageSize = m["ChangeGarbageSize"]["size"].get<std::uint64_t>();
         _changeGarbageSize(garbageSize);
+    } catch (...) {}
+
+    try {
+        if (m.contains("ShowError")) {
+            auto message = m["ShowError"]["message"].get<std::string>();
+            QMessageBox::warning(this, "Can't do that", q(message));
+        }
     } catch (...) {}
 
     try {

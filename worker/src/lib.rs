@@ -91,8 +91,8 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 PerformInitialLoad => requests::read_local_media(&MEDIA),
                 FileInventory => requests::file_inventory(&MEDIA),
                 MapMedia(from, to) => requests::map_media(&MEDIA, from, to),
-                LookupFilm(tmdb_id, tmdb_api_key) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key),
-                LookupTv(tmdb_id, tmdb_api_key) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key),
+                LookupFilm(tmdb_id, tmdb_api_key, skip_special_features) => requests::lookup_film(&MEDIA, tmdb_id, tmdb_api_key, skip_special_features),
+                LookupTv(tmdb_id, tmdb_api_key, skip_season_0) => requests::lookup_tv(&MEDIA, tmdb_id, tmdb_api_key, skip_season_0),
                 ConfirmPlay(id) => requests::confirm_play(&MEDIA, id),
                 DeleteTvShow(id) => requests::delete_tv_show(&MEDIA, id),
                 DeleteTvSeason(id, season) => requests::delete_tv_season(&MEDIA, id, season),
@@ -113,6 +113,12 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
                 RemoveFromStitch(index) => requests::remove_from_stitch(&MEDIA, index),
                 ReorderStitch(from, to) => requests::reorder_stitch(&MEDIA, from, to),
                 ClearStitch => requests::clear_stitch(&MEDIA),
+                StartCut(title_id) => requests::start_cut(&MEDIA, title_id),
+                AddCutPoint(position_ms) => requests::add_cut_point(&MEDIA, position_ms),
+                RemoveCutPoint(index) => requests::remove_cut_point(&MEDIA, index),
+                AssignCutSegment(index, to) => requests::assign_cut_segment(&MEDIA, index, to),
+                UnassignCutSegment(index) => requests::unassign_cut_segment(&MEDIA, index),
+                CancelCut => requests::cancel_cut(&MEDIA),
                 _ => vec![],
             };
 
@@ -162,10 +168,11 @@ pub extern "C" fn start_rust_processing(ptrd: usize, media_dir: *const c_char, c
 
             // Process `message`
             let events = match message.clone() {
-                ReencodeRequest(id, command) => requests::reencode_tv_episode(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
-                ReencodeFilmRequest(id, command) => requests::reencode_film_video(&MEDIA, id, command, |e| push!(cb, ptrd, &e)),
+                ReencodeRequest(id, command, mkvmerge_enabled, mkvmerge_command) => requests::reencode_tv_episode(&MEDIA, id, command, mkvmerge_enabled, mkvmerge_command, |e| push!(cb, ptrd, &e)),
+                ReencodeFilmRequest(id, command, mkvmerge_enabled, mkvmerge_command) => requests::reencode_film_video(&MEDIA, id, command, mkvmerge_enabled, mkvmerge_command, |e| push!(cb, ptrd, &e)),
                 PortableEncodeRequest(id) => requests::portable_encode(&MEDIA, id, |e| push!(cb, ptrd, &e)),
                 PerformStitch => requests::perform_stitch(&MEDIA, |e| push!(cb, ptrd, &e)),
+                ProcessCuts(command) => requests::process_cuts(&MEDIA, command, |e| push!(cb, ptrd, &e)),
                 _ => vec![],
             };
 
@@ -213,7 +220,7 @@ pub extern "C" fn map_film_video(title_id: *const c_char, media_id: *const c_cha
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lookup_film(tmdb_id: *const c_char, tmdb_api_key: *const c_char) {
+pub extern "C" fn lookup_film(tmdb_id: *const c_char, tmdb_api_key: *const c_char, skip_special_features: bool) {
     println!("[rust] lookup_film called");
 
     let tmdb_id = cstr(tmdb_id);
@@ -225,11 +232,11 @@ pub extern "C" fn lookup_film(tmdb_id: *const c_char, tmdb_api_key: *const c_cha
         Some(tmdb_api_key)
     };
 
-    SENDER.get().map(|s| s.lock().unwrap().send(LookupFilm(tmdb_id, tmdb_api_key)));
+    SENDER.get().map(|s| s.lock().unwrap().send(LookupFilm(tmdb_id, tmdb_api_key, skip_special_features)));
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lookup_tv(tmdb_id: *const c_char, tmdb_api_key: *const c_char) {
+pub extern "C" fn lookup_tv(tmdb_id: *const c_char, tmdb_api_key: *const c_char, skip_season_0: bool) {
     println!("[rust] lookup_tv called");
 
     let tmdb_id = cstr(tmdb_id);
@@ -241,7 +248,7 @@ pub extern "C" fn lookup_tv(tmdb_id: *const c_char, tmdb_api_key: *const c_char)
         Some(tmdb_api_key)
     };
 
-    SENDER.get().map(|s| s.lock().unwrap().send(LookupTv(tmdb_id, tmdb_api_key)));
+    SENDER.get().map(|s| s.lock().unwrap().send(LookupTv(tmdb_id, tmdb_api_key, skip_season_0)));
 }
 
 #[unsafe(no_mangle)]
@@ -330,13 +337,14 @@ pub extern "C" fn unidentify_film_video(id: *const c_char) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn reencode_film_video(id: *const c_char, command: *const c_char) {
+pub extern "C" fn reencode_film_video(id: *const c_char, command: *const c_char, mkvmerge_enabled: bool, mkvmerge_command: *const c_char) {
     println!("[rust] reencode_film_video called");
 
     let id = FilmVideoId(cstr(id));
     let command = cstr(command);
+    let mkvmerge_command = cstr(mkvmerge_command);
 
-    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeFilmRequest(id, command)));
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeFilmRequest(id, command, mkvmerge_enabled, mkvmerge_command)));
 }
 
 #[unsafe(no_mangle)]
@@ -431,13 +439,57 @@ pub extern "C" fn perform_stitch() {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn reencode_tv_episode(id: *const c_char, command: *const c_char) {
+pub extern "C" fn start_cut(title_id: *const c_char) {
+    let title_id = FileBackedTitleId(cstr(title_id));
+    SENDER.get().map(|s| s.lock().unwrap().send(StartCut(title_id)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn add_cut_point(position_ms: u64) {
+    SENDER.get().map(|s| s.lock().unwrap().send(AddCutPoint(position_ms)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn remove_cut_point(index: usize) {
+    SENDER.get().map(|s| s.lock().unwrap().send(RemoveCutPoint(index)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn assign_cut_segment(segment_index: usize, media_id: *const c_char, is_tv: bool) {
+    let id_str = cstr(media_id);
+    let to = if is_tv {
+        MappableMediaId::TvEpisode(TvEpisodeId(id_str))
+    } else {
+        MappableMediaId::FilmVideo(FilmVideoId(id_str))
+    };
+    SENDER.get().map(|s| s.lock().unwrap().send(AssignCutSegment(segment_index, to)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn unassign_cut_segment(segment_index: usize) {
+    SENDER.get().map(|s| s.lock().unwrap().send(UnassignCutSegment(segment_index)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn cancel_cut() {
+    SENDER.get().map(|s| s.lock().unwrap().send(CancelCut));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn process_cuts(command: *const c_char) {
+    let command = cstr(command);
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ProcessCuts(command)));
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn reencode_tv_episode(id: *const c_char, command: *const c_char, mkvmerge_enabled: bool, mkvmerge_command: *const c_char) {
     println!("[rust] reencode_tv_episode called");
 
     let id = TvEpisodeId(cstr(id));
     let command = cstr(command);
+    let mkvmerge_command = cstr(mkvmerge_command);
 
-    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeRequest(id, command)));
+    FFMPEG_SENDER.get().map(|s| s.lock().unwrap().send(ReencodeRequest(id, command, mkvmerge_enabled, mkvmerge_command)));
 }
 
 /// Returns the filename for a given id.

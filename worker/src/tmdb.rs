@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::{fs, thread};
 use std::time::{Duration, Instant};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use walkdir::WalkDir;
 
 #[derive(Debug)]
@@ -29,13 +29,13 @@ pub struct TmdbFilm {
     pub(crate) runtime: Option<usize>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TmdbFilmVideos {
     pub(crate) id: usize, // This is the FilmId
     pub(crate) results: Vec<TmdbFilmVideo>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TmdbFilmVideo {
     pub(crate) name: String,
     pub(crate) r#type: String,
@@ -108,7 +108,7 @@ impl TmdbCache {
             })
     }
 
-    pub fn query_film(&self, api_key: &str, tmdb_id: &str) -> Result<(TmdbFilm, TmdbFilmVideos), Box<dyn std::error::Error>> {
+    pub fn query_film(&self, api_key: &str, tmdb_id: &str, skip_special_features: bool) -> Result<(TmdbFilm, TmdbFilmVideos), Box<dyn std::error::Error>> {
         let film_location = self.get_movie_file_location(&tmdb_id);
         let videos_location = self.get_movie_videos_file_location(&tmdb_id);
 
@@ -142,7 +142,17 @@ impl TmdbCache {
         };
 
         let film: TmdbFilm = serde_json::from_slice(&film_json)?;
-        let videos: TmdbFilmVideos = serde_json::from_slice(&videos_json)?;
+        let mut videos: TmdbFilmVideos = serde_json::from_slice(&videos_json)?;
+
+        if skip_special_features && !videos.results.is_empty() {
+            videos.results.clear();
+            // Rewrite the cache with the trailers/featurettes blanked out, so a later
+            // app restart (which rebuilds the library straight from the TMDB cache
+            // files) doesn't bring the skipped extras back.
+            if let Ok(trimmed) = serde_json::to_vec(&videos) {
+                fs::write(&videos_location, trimmed).ok();
+            }
+        }
 
         Ok((film, videos))
     }

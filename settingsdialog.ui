@@ -352,6 +352,30 @@
           </widget>
          </item>
          <item>
+          <widget class="QCheckBox" name="mkvmergeRemuxCheckbox">
+           <property name="text">
+            <string>Remux audio/subtitles/chapters with mkvmerge after encoding</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="mkvmergeRemuxDesc">
+           <property name="text">
+            <string>Some players (including VLC and Emby clients) lose audio on seek/pause with files ffmpeg muxes directly, caused by how ffmpeg interleaves subtitle tracks. This runs a second pass with mkvmerge to remux the original audio/subtitles/chapters onto the new video instead, which avoids the issue. ${video}, ${in}, and ${out} are substituted with the freshly-encoded video, the original source, and the destination paths.</string>
+           </property>
+           <property name="wordWrap">
+            <bool>true</bool>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLineEdit" name="mkvmergeCommandEdit">
+           <property name="placeholderText">
+            <string>mkvmerge Command</string>
+           </property>
+          </widget>
+         </item>
+         <item>
           <spacer name="encodeSpacer">
            <property name="orientation">
             <enum>Qt::Orientation::Vertical</enum>
